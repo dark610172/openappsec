@@ -390,18 +390,6 @@ extractAnnotationsNames<NewParsedRule>(
         rule_annotation[AnnotationTypes::TRIGGER] = policy_name + "/" + trigger_annotation_name;
     }
 
-    string exception_annotation_name;
-    // TBD: support multiple exceptions
-    if (!parsed_rule.getExceptions().empty() && !parsed_rule.getExceptions()[0].empty()) {
-        exception_annotation_name = parsed_rule.getExceptions()[0];
-    } else if (!default_rule.getExceptions().empty() && !default_rule.getExceptions()[0].empty()) {
-        exception_annotation_name = default_rule.getExceptions()[0];
-    }
-
-    if (!exception_annotation_name.empty()) {
-        rule_annotation[AnnotationTypes::EXCEPTION] = policy_name + "/" + exception_annotation_name;
-    }
-
     string web_user_res_annotation_name =
         parsed_rule.getCustomResponse().empty() ?
         default_rule.getCustomResponse() :
@@ -1039,12 +1027,8 @@ createMultiRulesSections(
     const string &web_user_res_vec_id,
     const string &web_user_res_vec_type,
     const string &asset_name,
-    const string &exception_name,
-    const vector<InnerException> &exceptions)
+    const vector<ParametersSection> &exception_params)
 {
-    string behaviorId = exceptions.empty() ? "" : exceptions[0].getBehaviorId();
-    ParametersSection exception_param = ParametersSection(behaviorId, exception_name);
-
     vector<PracticeSection> practices;
     if (!practice_id.empty()) {
         practices.push_back(PracticeSection(practice_id, practice_type, practice_name));
@@ -1073,7 +1057,7 @@ createMultiRulesSections(
         port,
         uri,
         practices,
-        {exception_param},
+        exception_params,
         triggers
     );
 
@@ -1340,7 +1324,9 @@ PolicyMakerUtils::createThreatPreventionPracticeSections(
     const string &uri,
     const string &default_mode,
     const V1beta2AppsecLinuxPolicy &policy,
-    map<AnnotationTypes, string> &rule_annotations)
+    map<AnnotationTypes, string> &rule_annotations,
+    const vector<ParametersSection> &exception_params,
+    const vector<InnerException> &rule_inner_exceptions)
 {
     if (rule_annotations[AnnotationTypes::PRACTICE].empty() ||
         web_apps.count(asset_name)
@@ -1371,8 +1357,7 @@ PolicyMakerUtils::createThreatPreventionPracticeSections(
         web_user_res_triggers[rule_annotations[AnnotationTypes::WEB_USER_RES]].getTriggerId(),
         "WebUserResponse",
         asset_name,
-        rule_annotations[AnnotationTypes::EXCEPTION],
-        inner_exceptions[rule_annotations[AnnotationTypes::EXCEPTION]]
+        exception_params
     );
     rules_config[rule_config.getAssetName()] = rule_config;
 
@@ -1439,7 +1424,7 @@ PolicyMakerUtils::createThreatPreventionPracticeSections(
             asset_name,
             default_mode,
             rule_annotations,
-            inner_exceptions[rule_annotations[AnnotationTypes::EXCEPTION]]);
+            rule_inner_exceptions);
     }
 
 }
@@ -1683,16 +1668,28 @@ PolicyMakerUtils::createPolicyElementsByRule<V1beta2AppsecLinuxPolicy, NewParsed
             );
     }
 
-    if (
-        rule_annotations.count(AnnotationTypes::EXCEPTION) > 0 &&
-        !rule_annotations[AnnotationTypes::EXCEPTION].empty() &&
-        !inner_exceptions.count(rule_annotations[AnnotationTypes::EXCEPTION])
-    ) {
-        inner_exceptions[rule_annotations[AnnotationTypes::EXCEPTION]] =
-            createExceptionSection<V1beta2AppsecLinuxPolicy>(
-                rule_annotations[AnnotationTypes::EXCEPTION],
-                policy
-            );
+    // Preserve v1beta2's first-empty-name fallback, then use every name in the selected list.
+    const auto &exception_rule = !rule.getExceptions().empty() && !rule.getExceptions()[0].empty()
+        ? rule : default_rule;
+    const auto &exception_names = exception_rule.getExceptions();
+    const auto exception_annotations = exception_names.empty() || exception_names[0].empty()
+        ? vector<string>{} : extractExceptionAnnotationNames(exception_rule, default_rule, policy_name);
+    vector<ParametersSection> exception_params;
+    vector<InnerException> rule_inner_exceptions;
+    set<string> seen_exceptions;
+    for (const auto &exception_name : exception_annotations) {
+        if (!seen_exceptions.insert(exception_name).second) continue;
+        if (!inner_exceptions.count(exception_name)) {
+            inner_exceptions[exception_name] = createExceptionSection<V1beta2AppsecLinuxPolicy>(exception_name, policy);
+        }
+        // Reuse behavior IDs across rules and keep parameters and WAAP overrides in annotation order.
+        for (const auto &exception : inner_exceptions.at(exception_name)) {
+            if (exception.getBehaviorId().empty()) {
+                throw PolicyGenException("Empty exception behavior ID for " + exception_name);
+            }
+            exception_params.push_back(ParametersSection(exception.getBehaviorId(), exception_name));
+            rule_inner_exceptions.push_back(exception);
+        }
     }
 
     if (
@@ -1745,7 +1742,9 @@ PolicyMakerUtils::createPolicyElementsByRule<V1beta2AppsecLinuxPolicy, NewParsed
         std::get<2>(splited_host_name),
         rule.getMode(),
         policy,
-        rule_annotations
+        rule_annotations,
+        exception_params,
+        rule_inner_exceptions
     );
 
     upgrade_settings = policy.getAppSecAutoUpgradeSpec();
