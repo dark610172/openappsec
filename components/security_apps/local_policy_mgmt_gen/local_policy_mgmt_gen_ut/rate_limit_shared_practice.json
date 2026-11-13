@@ -1,0 +1,58 @@
+{
+    "apiVersion": "v1beta2",
+    "policies": {
+        "default": {
+            "mode": "prevent",
+            "threatPreventionPractices": ["web"],
+            "accessControlPractices": ["limit"],
+            "customResponse": "code"
+        },
+        "specificRules": [
+            {
+                "host": "first.example",
+                "mode": "prevent",
+                "threatPreventionPractices": ["web"],
+                "accessControlPractices": ["limit"],
+                "customResponse": "page"
+            },
+            {
+                "host": "second.example",
+                "mode": "prevent",
+                "threatPreventionPractices": ["web"],
+                "accessControlPractices": ["limit"],
+                "customResponse": ""
+            }
+        ]
+    },
+    "threatPreventionPractices": [
+        {
+            "name": "web",
+            "fileSecurity": {"overrideMode": "inactive"},
+            "intrusionPrevention": {"overrideMode": "inactive"},
+            "snortSignatures": {"overrideMode": "inactive"},
+            "webAttacks": {"overrideMode": "inactive"},
+            "antiBot": {"overrideMode": "inactive"},
+            "schemaValidation": {"overrideMode": "inactive"}
+        }
+    ],
+    "accessControlPractices": [
+        {
+            "name": "limit",
+            "rateLimit": {
+                "overrideMode": "prevent",
+                "rules": [{"limit": 10, "uri": "/", "unit": "second"}]
+            }
+        }
+    ],
+    "customResponses": [
+        {"name": "code", "mode": "response-code-only", "httpResponseCode": 429},
+        {
+            "name": "page",
+            "mode": "block-page",
+            "httpResponseCode": 403,
+            "messageTitle": "Rate limit exceeded",
+            "messageBody": "Try again later"
+        }
+    ],
+    "autoUpgrade": {"mode": "manual"}
+}

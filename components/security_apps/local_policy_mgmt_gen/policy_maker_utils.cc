@@ -1201,7 +1201,7 @@ PolicyMakerUtils::createRateLimitSection(
 
     auto rules = access_control_practice.getRateLimit().createRateLimitRulesSection(trigger);
 
-    rate_limit[rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE]] = RateLimitSection(
+    rate_limit[make_pair(asset_name, rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE])] = RateLimitSection(
         asset_name,
         url,
         uri,
@@ -1291,8 +1291,8 @@ PolicyMakerUtils::createThreatPreventionPracticeSections(
         practice_id,
         rule_annotations[AnnotationTypes::PRACTICE],
         "WebApplication",
-        rate_limit[rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE]].getId(),
-        rate_limit[rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE]].getName(),
+        rate_limit[make_pair(asset_name, rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE])].getId(),
+        rate_limit[make_pair(asset_name, rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE])].getName(),
         "RateLimit",
         rule_annotations[AnnotationTypes::TRIGGER],
         log_triggers[rule_annotations[AnnotationTypes::TRIGGER]].getTriggerId(),
@@ -1403,7 +1403,12 @@ PolicyMakerUtils::combineElementsToPolicy(const string &policy_version)
     IntrusionPreventionWrapper ips_section(convertMapToVector(ips));
     SnortSectionWrapper snort_section(convertMapToVector(snort), convertMapToVector(snort_protections));
     FileSecurityWrapper file_security_section(convertMapToVector(file_security));
-    AccessControlRulebaseWrapper rate_limit_section(convertMapToVector(rate_limit));
+    vector<RateLimitSection> rate_limit_sections;
+    for (const auto &entry : rate_limit) {
+        // The key is (asset, access control practice); skip entries created by lookups without a practice.
+        if (!entry.first.second.empty()) rate_limit_sections.push_back(entry.second);
+    }
+    AccessControlRulebaseWrapper rate_limit_section(rate_limit_sections);
     SecurityAppsWrapper security_app_section = SecurityAppsWrapper(
         appses_section,
         triggers_section,

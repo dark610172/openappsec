@@ -122,3 +122,71 @@ TEST_F(RateLimitResponseTest, LeavesResponseIdEmptyWhenNoResponseIsSelected)
     EXPECT_STREQ("", limits[0]["webUserResponseId"].GetString());
     EXPECT_TRUE(document["triggers"]["rulebase"]["webUserResponse"].Empty());
 }
+
+TEST_F(RateLimitResponseTest, KeepsSharedPracticeForEachHostAndDefaultRule)
+{
+    string generated = generate({{"shared", loadPolicy("rate_limit_shared_practice.json")}});
+    rapidjson::Document document;
+    document.Parse(generated.c_str());
+    ASSERT_FALSE(document.HasParseError());
+
+    const auto &responses = document["triggers"]["rulebase"]["webUserResponse"];
+    ASSERT_TRUE(responses.IsArray());
+    ASSERT_EQ(2u, responses.Size());
+    map<string, string> response_contexts;
+    for (const auto &response : responses.GetArray()) {
+        response_contexts[response["triggerName"].GetString()] = response["context"].GetString();
+    }
+
+    const auto &limits = document["accessControlV2"]["rulebase"]["rateLimit"];
+    ASSERT_TRUE(limits.IsArray());
+    ASSERT_EQ(3u, limits.Size());
+    map<string, string> expected_responses = {
+        {"assetId(first.example)", "shared/page"},
+        {"assetId(second.example)", "shared/code"},
+        {"All()", "shared/code"}
+    };
+    map<string, string> limit_contexts;
+    for (const auto &limit : limits.GetArray()) {
+        string context = limit["context"].GetString();
+        SCOPED_TRACE(context);
+        auto expected = expected_responses.find(context);
+        ASSERT_NE(expected_responses.end(), expected);
+        EXPECT_STREQ("shared/limit", limit["name"].GetString());
+        EXPECT_STREQ("Active", limit["mode"].GetString());
+        ASSERT_EQ(1u, limit["rules"].Size());
+        EXPECT_EQ(10, limit["rules"][0]["limit"].GetInt());
+        string id = limit["practiceId"].GetString();
+        ASSERT_FALSE(id.empty());
+        EXPECT_TRUE(limit_contexts.emplace(id, context).second);
+        ASSERT_TRUE(limit.HasMember("webUserResponseId"));
+        ASSERT_TRUE(limit["webUserResponseId"].IsString());
+        string response_id = limit["webUserResponseId"].GetString();
+        ASSERT_FALSE(response_id.empty());
+        auto response = response_contexts.find(expected->second);
+        ASSERT_NE(response_contexts.end(), response);
+        EXPECT_EQ("triggerId(" + response_id + ")", response->second);
+        expected_responses.erase(expected);
+    }
+    EXPECT_TRUE(expected_responses.empty());
+
+    const auto &rules = document["rules"]["rulebase"]["rulesConfig"];
+    ASSERT_TRUE(rules.IsArray());
+    ASSERT_EQ(3u, rules.Size());
+    for (const auto &rule : rules.GetArray()) {
+        string asset_id = rule["assetId"].GetString();
+        SCOPED_TRACE(asset_id);
+        unsigned int rate_limit_practices = 0;
+        for (const auto &practice : rule["practices"].GetArray()) {
+            if (string(practice["practiceType"].GetString()) != "RateLimit") continue;
+            ++rate_limit_practices;
+            EXPECT_STREQ("shared/limit", practice["practiceName"].GetString());
+            auto limit = limit_contexts.find(practice["practiceId"].GetString());
+            ASSERT_NE(limit_contexts.end(), limit);
+            EXPECT_EQ(asset_id == "Any" ? "All()" : "assetId(" + asset_id + ")", limit->second);
+            limit_contexts.erase(limit);
+        }
+        EXPECT_EQ(1u, rate_limit_practices);
+    }
+    EXPECT_TRUE(limit_contexts.empty());
+}

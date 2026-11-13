@@ -254,7 +254,7 @@ private:
     std::map<std::string, SnortProtectionsSection> snort;
     std::map<std::string, ProtectionsSection> snort_protections;
     std::map<std::string, FileSecurityProtectionsSection> file_security;
-    std::map<std::string, RateLimitSection> rate_limit;
+    std::map<std::pair<std::string, std::string>, RateLimitSection> rate_limit;
     std::map<std::string, UsersIdentifiersRulebase> users_identifiers;
     std::map<std::string, AppSecTrustedSources> trusted_sources;
     AppSecAutoUpgradeSpec upgrade_settings;
