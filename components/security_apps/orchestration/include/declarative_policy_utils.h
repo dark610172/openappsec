@@ -70,7 +70,7 @@ public:
     void init();
     Maybe<std::string> getLocalPolicyChecksum();
     std::string getPolicyChecksum();
-    void updateCurrentPolicy(const std::string &policy_checksum);
+    bool updateCurrentPolicy(const std::string &policy_checksum);
     void sendUpdatesToFog(
         const std::string &access_token,
         const std::string &tenant_id,

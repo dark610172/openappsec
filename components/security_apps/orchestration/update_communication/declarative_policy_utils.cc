@@ -100,7 +100,7 @@ DeclarativePolicyUtils::getCleanChecksum(const string &unclean_checksum)
     return clean_checksum;
 }
 
-void
+bool
 DeclarativePolicyUtils::updateCurrentPolicy(const string &policy_checksum)
 {
     string clean_policy_checksum = getCleanChecksum(policy_checksum);
@@ -114,10 +114,11 @@ DeclarativePolicyUtils::updateCurrentPolicy(const string &policy_checksum)
 
     if (maybe_policy.empty()) {
         dbgWarning(D_ORCHESTRATOR) << "Could not generate appsec local policy";
-        return;
+        return false;
     }
 
     curr_policy = maybe_policy;
+    return true;
 }
 
 string
@@ -189,7 +190,10 @@ DeclarativePolicyUtils::getUpdate(CheckUpdateRequest &request)
         return "";
     }
 
-    updateCurrentPolicy(maybe_new_version.unpack());
+    if (!updateCurrentPolicy(maybe_new_version.unpack())) {
+        should_apply_local_policy = true;
+        return "";
+    }
     string offline_policy_checksum = getPolicyChecksum();
     if (!policy_checksum.ok() || offline_policy_checksum != policy_checksum.unpack()) {
         dbgTrace(D_ORCHESTRATOR) << "Update policy checksum";

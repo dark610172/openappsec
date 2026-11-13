@@ -17,3 +17,4 @@ add_subdirectory(updates_process_reporter)
 add_subdirectory(external_sdk_server)
 
 #add_subdirectory(orchestration_ut)
+add_subdirectory(declarative_policy_utils_ut)
