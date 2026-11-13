@@ -9,6 +9,7 @@
 #include "i_mainloop.h"
 #include "i_time_get.h"
 #include "rate_limit_config.h"
+#include "rate_limit_redis.h"
 #include "nano_attachment_common.h"
 #include "http_inspection_events.h"
 #include "Waf2Util.h"
@@ -36,8 +37,6 @@
 USE_DEBUG_FLAG(D_RATE_LIMIT);
 
 using namespace std;
-
-enum class RateLimitVerdict { ACCEPT, DROP, DROP_AND_LOG };
 
 class RateLimit::Impl
     :
@@ -448,41 +447,13 @@ public:
             return RateLimitVerdict::ACCEPT;
         }
 
-        redisReply* reply = static_cast<redisReply*>(redisCommand(redis, "EVALSHA %s 1 %s %f %d",
-        rate_limit_lua_script_hash.c_str(), key.c_str(), limit, burst));
-
-        if (reply == NULL || redis->err) {
+        auto verdict = redis_script.decide(redis, key, limit, burst, [this]() { return loadRedisScript(); });
+        if (!redis_script.isReady()) {
             dbgDebug(D_RATE_LIMIT)
-                << "Error executing Redis command: No reply received, unable to enforce rate limit";
+                << "Error executing Redis command or loading script, unable to enforce rate limit";
             reconnectRedis();
-            return RateLimitVerdict::ACCEPT;
         }
-
-        // redis's lua script returned true - accept
-        if (reply->type == REDIS_REPLY_INTEGER) {
-            freeReplyObject(reply);
-            return RateLimitVerdict::ACCEPT;
-        }
-
-        // redis's lua script returned false - drop, no need to log
-        if (reply->type == REDIS_REPLY_NIL) {
-            freeReplyObject(reply);
-            return RateLimitVerdict::DROP;
-        }
-
-        // redis's lua script returned string - drop and send log
-        const char* log_str = "BLOCK AND LOG";
-        if (reply->type == REDIS_REPLY_STRING && strncmp(reply->str, log_str, strlen(log_str)) == 0) {
-            freeReplyObject(reply);
-            return RateLimitVerdict::DROP_AND_LOG;
-        }
-
-        dbgDebug(D_RATE_LIMIT)
-            << "Got unexected reply from redis. reply type: "
-            << reply->type
-            << ". not enforcing rate limit for this request.";
-        freeReplyObject(reply);
-        return RateLimitVerdict::ACCEPT;
+        return verdict;
     }
 
     void
@@ -617,6 +588,18 @@ public:
         if (context == nullptr) return genError("");
 
         redis = context;
+        if (!loadRedisScript()) {
+            dbgDebug(D_RATE_LIMIT) << "Failed to load rate limit script in Redis";
+            disconnectRedis();
+            return genError("");
+        }
+
+        return Maybe<void>();
+    }
+
+    bool
+    loadRedisScript()
+    {
         static string luaScript = R"(
             local key = KEYS[1]
             local rateLimit = tonumber(ARGV[1])
@@ -648,14 +631,7 @@ public:
         )";
 
         // Load the Lua script in Redis and retrieve its SHA1 hash
-        redisReply* loadReply =
-            static_cast<redisReply*>(redisCommand(redis, "SCRIPT LOAD %s", luaScript.c_str()));
-        if (loadReply != nullptr && loadReply->type == REDIS_REPLY_STRING) {
-            rate_limit_lua_script_hash = loadReply->str;
-            freeReplyObject(loadReply);
-        }
-
-        return Maybe<void>();
+        return redis_script.loadScript(redis, luaScript);
     }
 
     void
@@ -696,6 +672,7 @@ public:
     void
     disconnectRedis()
     {
+        redis_script.reset();
         if (redis) {
             redisFree(redis);
             redis = nullptr;
@@ -749,7 +726,7 @@ private:
     static constexpr auto INSPECT = ServiceVerdict::TRAFFIC_VERDICT_INSPECT;
 
     RateLimitAction practice_action;
-    string rate_limit_lua_script_hash;
+    RateLimitRedis redis_script{redisCommand, freeReplyObject};
     int burst;
     float limit;
     redisContext* redis = nullptr;
