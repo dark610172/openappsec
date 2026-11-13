@@ -151,7 +151,7 @@ public:
     PracticeAdvancedConfig(const AppSecPracticeSpec &parsed_appsec_spec)
         :
         http_header_max_size(parsed_appsec_spec.getWebAttacks().getMaxHeaderSizeBytes()),
-        http_illegal_methods_allowed(0),
+        http_illegal_methods_allowed(parsed_appsec_spec.getWebAttacks().getprotections().getNonValidHttpMethods()),
         http_request_body_max_size(parsed_appsec_spec.getWebAttacks().getMaxBodySizeKb()),
         json_max_object_depth(parsed_appsec_spec.getWebAttacks().getMaxObjectDepth()),
         url_max_size(parsed_appsec_spec.getWebAttacks().getMaxUrlSizeBytes())
@@ -162,10 +162,11 @@ public:
         int _http_header_max_size,
         int _http_request_body_max_size,
         int _json_max_object_depth,
-        int _url_max_size)
+        int _url_max_size,
+        bool _http_illegal_methods_allowed)
         :
         http_header_max_size(_http_header_max_size),
-        http_illegal_methods_allowed(0),
+        http_illegal_methods_allowed(_http_illegal_methods_allowed),
         http_request_body_max_size(_http_request_body_max_size),
         json_max_object_depth(_json_max_object_depth),
         url_max_size(_url_max_size)

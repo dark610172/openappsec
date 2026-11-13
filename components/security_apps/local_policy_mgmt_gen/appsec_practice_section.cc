@@ -157,6 +157,12 @@ AppSecPracticeWebAttacks::load(cereal::JSONInputArchive &archive_in)
     parseAppsecJSONKey<int>("max-url-size-bytes", max_url_size_bytes, archive_in, 32768);
 }
 
+const AppSecWebAttackProtections &
+AppSecPracticeWebAttacks::getprotections() const
+{
+    return protections;
+}
+
 int
 AppSecPracticeWebAttacks::getMaxBodySizeKb() const
 {
