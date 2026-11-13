@@ -108,6 +108,7 @@ PolicyMakerUtils::openFileAsJson(const string &path)
 void
 PolicyMakerUtils::clearElementsMaps()
 {
+    policy_version_name.clear();
     log_triggers.clear();
     web_user_res_triggers.clear();
     inner_exceptions.clear();
@@ -118,6 +119,9 @@ PolicyMakerUtils::clearElementsMaps()
     snort_protections.clear();
     file_security.clear();
     rate_limit.clear();
+    users_identifiers.clear();
+    trusted_sources.clear();
+    upgrade_settings = AppSecAutoUpgradeSpec{};
 }
 
 // LCOV_EXCL_START Reason: no test exist - needed for NGINX config

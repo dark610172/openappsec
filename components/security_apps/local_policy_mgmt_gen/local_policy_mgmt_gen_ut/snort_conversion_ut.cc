@@ -77,15 +77,18 @@ protected:
     }
 
     string
-    policyJson(const string &file_name)
+    policyJson(const string &file_name, bool with_identifiers = false)
     {
         // Test paths contain no JSON escapes; shell quoting is asserted separately.
-        return R"({
+        return string(R"({
             "apiVersion": "v1beta2",
             "policies": {
                 "default": {
                     "mode": "prevent",
-                    "threatPreventionPractices": ["snort"],
+                    "threatPreventionPractices": ["snort"],)")
+            + (with_identifiers ? R"(
+                    "sourceIdentifiers": "rejected-source",
+                    "trustedSources": "rejected-trusted",)" : "") + R"(
                     "accessControlPractices": []
                 },
                 "specificRules": []
@@ -101,14 +104,24 @@ protected:
                 "antiBot": {"overrideMode": "inactive"},
                 "schemaValidation": {"overrideMode": "inactive"}
             }],
+            )" + (with_identifiers ? R"(
+            "sourcesIdentifiers": [{
+                "name": "rejected-source",
+                "sourcesIdentifiers": [{"identifier": "headerkey", "value": ["X-Rejected-Source"]}]
+            }],
+            "trustedSources": [{
+                "name": "rejected-trusted",
+                "minNumOfSources": 3,
+                "sourcesIdentifiers": ["rejected-client"]
+            }],)" : "") + R"(
             "autoUpgrade": {"mode": "manual"}
         })";
     }
 
     V1beta2AppsecLinuxPolicy
-    loadPolicy(const string &file_name)
+    loadPolicy(const string &file_name, bool with_identifiers = false)
     {
-        istringstream input(policyJson(file_name));
+        istringstream input(policyJson(file_name, with_identifiers));
         cereal::JSONInputArchive archive(input);
         V1beta2AppsecLinuxPolicy policy;
         policy.serialize(archive);
@@ -246,6 +259,34 @@ TEST_F(SnortConversionTest, RejectsNonzeroExitAndCanRetryWithTheSameGenerator)
     removed_paths.clear();
     output_paths.clear();
     checkSuccessfulConversion("custom.rules", "'custom.rules'", "custom.rules");
+}
+
+TEST_F(SnortConversionTest, ClearsIdentifiersAfterFailedConversionBeforeRetry)
+{
+    expectConversion("custom.rules", "'custom.rules'", "custom.rules", 1);
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE((generator.proccesMultipleAppsecPolicies<V1beta2AppsecLinuxPolicy, NewParsedRule>(
+        {{"test", loadPolicy("custom.rules", true)}}, "test-version", output.fname
+    )).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+
+    removed_paths.clear();
+    output_paths.clear();
+    expectConversion("custom.rules", "'custom.rules'", "custom.rules");
+    expectConvertedOutput();
+    string generated = generate("custom.rules", output.fname);
+    rapidjson::Document document;
+    document.Parse(generated.c_str());
+    ASSERT_FALSE(document.HasParseError());
+    const auto &identifiers = document["rules"]["rulebase"]["usersIdentifiers"];
+    ASSERT_TRUE(identifiers.IsArray());
+    EXPECT_TRUE(identifiers.Empty());
+    EXPECT_EQ(string::npos, generated.find("X-Rejected-Source"));
+    EXPECT_EQ(string::npos, generated.find("rejected-client"));
+    EXPECT_EQ(generated, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
 
 TEST_F(SnortConversionTest, RejectsShellExecutionFailure)
