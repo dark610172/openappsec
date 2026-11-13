@@ -1404,9 +1404,13 @@ PolicyMakerUtils::combineElementsToPolicy(const string &policy_version)
     SnortSectionWrapper snort_section(convertMapToVector(snort), convertMapToVector(snort_protections));
     FileSecurityWrapper file_security_section(convertMapToVector(file_security));
     vector<RateLimitSection> rate_limit_sections;
+    // The key is (asset, access control practice); skip entries created by lookups without a practice.
+    // Configuration lookup uses the first matching section, so host-specific sections go before the "Any" default.
     for (const auto &entry : rate_limit) {
-        // The key is (asset, access control practice); skip entries created by lookups without a practice.
-        if (!entry.first.second.empty()) rate_limit_sections.push_back(entry.second);
+        if (!entry.first.second.empty() && entry.first.first != "Any") rate_limit_sections.push_back(entry.second);
+    }
+    for (const auto &entry : rate_limit) {
+        if (!entry.first.second.empty() && entry.first.first == "Any") rate_limit_sections.push_back(entry.second);
     }
     AccessControlRulebaseWrapper rate_limit_section(rate_limit_sections);
     SecurityAppsWrapper security_app_section = SecurityAppsWrapper(

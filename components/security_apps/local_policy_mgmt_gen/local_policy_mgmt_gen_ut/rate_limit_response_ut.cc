@@ -141,6 +141,8 @@ TEST_F(RateLimitResponseTest, KeepsSharedPracticeForEachHostAndDefaultRule)
     const auto &limits = document["accessControlV2"]["rulebase"]["rateLimit"];
     ASSERT_TRUE(limits.IsArray());
     ASSERT_EQ(3u, limits.Size());
+    // Configuration lookup returns the first matching section, so the default must come after host sections.
+    EXPECT_STREQ("All()", limits[2]["context"].GetString());
     map<string, string> expected_responses = {
         {"assetId(first.example)", "shared/page"},
         {"assetId(second.example)", "shared/code"},
