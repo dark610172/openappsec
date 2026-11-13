@@ -39,7 +39,7 @@ NginxAttachmentOpaque::NginxAttachmentOpaque(HttpTransactionData _transaction_da
 {
     try {
         uuid = to_string(boost::uuids::random_generator()());
-    } catch (const boost::uuids::entropy_error &e) {
+    } catch (const std::exception &e) {
         dbgWarning(D_HTTP_MANAGER) << "Failed to generate UUID. Error: " << e.what();
     }
 

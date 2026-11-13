@@ -127,7 +127,7 @@ AppSecTrustedSources::AppSecTrustedSources(
 {
     try {
         id = to_string(boost::uuids::random_generator()());
-    } catch (const boost::uuids::entropy_error &e) {
+    } catch (const std::exception &e) {
         dbgWarning(D_LOCAL_POLICY) << "Failed to generate Trusted Sources ID. Error: " << e.what();
     }
 }

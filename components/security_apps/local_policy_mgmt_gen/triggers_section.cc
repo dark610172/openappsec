@@ -76,7 +76,7 @@ LogTriggerSection::LogTriggerSection(
     try {
         id = to_string(boost::uuids::random_generator()());
         context = "triggerId(" + id + ")";
-    } catch (const boost::uuids::entropy_error &e) {
+    } catch (const std::exception &e) {
         dbgWarning(D_LOCAL_POLICY) << "Failed to generate log trigger UUID. Error: " << e.what();
     }
 }
@@ -147,7 +147,7 @@ WebUserResponseTriggerSection::WebUserResponseTriggerSection(
     try {
         id = to_string(boost::uuids::random_generator()());
         context = "triggerId(" + id + ")";
-    } catch (const boost::uuids::entropy_error &e) {
+    } catch (const std::exception &e) {
         dbgWarning(D_LOCAL_POLICY) << "Failed to generate webUserResponse trigger UUID. Error: " << e.what();
     }
 }

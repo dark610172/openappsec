@@ -861,7 +861,7 @@ ConfigComponent::Impl::commitSuccess()
     policy_load_count++;
     try {
         policy_load_id = to_string(boost::uuids::random_generator()());
-    } catch (const boost::uuids::entropy_error &e) {
+    } catch (const std::exception &e) {
         dbgWarning(D_CONFIG) << "Failed to create random id for policy_load_id";
         policy_load_id = "";
     }
