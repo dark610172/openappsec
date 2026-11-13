@@ -14,6 +14,12 @@
 #include "policy_maker_utils.h"
 
 #include <regex>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "local_policy_mgmt_gen.h"
 #include "log_generator.h"
@@ -177,14 +183,55 @@ PolicyMakerUtils::dumpPolicyToFile(
         policy.getSecurityApps().save(ar);
     }
     string policy_str = policy_ss.str();
-    try {
-        ofstream policy_file(policy_path);
-        policy_file << policy_str;
-        policy_file.close();
-    } catch (const ofstream::failure &e) {
-        dbgDebug(D_NGINX_POLICY) << "Error while writing new policy to " << policy_path << ", Error: " << e.what();
+    // Keep the temporary file beside the destination so rename is an atomic replacement.
+    string temporary_path = policy_path + ".XXXXXX";
+    vector<char> temporary_name(temporary_path.begin(), temporary_path.end());
+    temporary_name.push_back('\0');
+    int fd = mkstemp(temporary_name.data());
+    if (fd == -1) {
+        dbgWarning(D_NGINX_POLICY) << "Could not create temporary policy for " << policy_path
+            << ", Error: " << strerror(errno);
         return "";
     }
+    auto cleanup = make_scope_exit([&]() {
+        if (fd != -1) close(fd);
+        unlink(temporary_name.data());
+    });
+
+    // Preserve existing regular-file permissions; new policy files stay private (0600).
+    struct stat existing;
+    if (stat(policy_path.c_str(), &existing) == 0 && S_ISREG(existing.st_mode)) {
+        if (fchmod(fd, existing.st_mode & 0777) != 0) {
+            dbgWarning(D_NGINX_POLICY) << "Could not set policy permissions for " << policy_path
+                << ", Error: " << strerror(errno);
+            return "";
+        }
+    }
+
+    // fdopen retains mkstemp's exclusively opened descriptor instead of reopening the pathname.
+    FILE *policy_file = fdopen(fd, "w");
+    if (policy_file == nullptr) {
+        dbgWarning(D_NGINX_POLICY) << "Could not open policy stream for " << policy_path
+            << ", Error: " << strerror(errno);
+        return "";
+    }
+    fd = -1; // fclose now owns the descriptor, including on a flush/close failure.
+    bool write_ok = fwrite(policy_str.data(), 1, policy_str.size(), policy_file) == policy_str.size();
+    write_ok = ferror(policy_file) == 0 && write_ok;
+    int write_error = errno;
+    int close_result = fclose(policy_file);
+    if (!write_ok || close_result != 0) {
+        int error = write_ok ? errno : write_error;
+        dbgWarning(D_NGINX_POLICY) << "Error while writing or closing new policy for " << policy_path
+            << ", Error: " << strerror(error);
+        return "";
+    }
+    if (rename(temporary_name.data(), policy_path.c_str()) != 0) {
+        dbgWarning(D_NGINX_POLICY) << "Could not replace policy at " << policy_path
+            << ", Error: " << strerror(errno);
+        return "";
+    }
+    cleanup.release();
 
     {
         cereal::JSONOutputArchive ar(settings_ss);
