@@ -145,6 +145,27 @@ TEST_F(PolicyFileTest, WritesCompletePolicyAndReplacesPreviousFile)
     expectNoTemporaryFiles();
 }
 
+TEST_F(PolicyFileTest, KeepsGroupOfReplacedFile)
+{
+    string first = generate(target, "first-version");
+    ASSERT_FALSE(first.empty());
+    // Pick a group the caller belongs to that differs from the default group of new files.
+    gid_t other_group = static_cast<gid_t>(-1);
+    vector<gid_t> groups(64);
+    int count = getgroups(static_cast<int>(groups.size()), groups.data());
+    for (int i = 0; i < count; ++i) {
+        if (groups[i] != getegid()) other_group = groups[i];
+    }
+    if (other_group == static_cast<gid_t>(-1)) GTEST_SKIP() << "no supplementary group available";
+    ASSERT_EQ(0, chown(target.c_str(), static_cast<uid_t>(-1), other_group));
+    string second = generate(target, "second-version");
+    ASSERT_FALSE(second.empty());
+    struct stat info;
+    ASSERT_EQ(0, stat(target.c_str(), &info));
+    EXPECT_EQ(other_group, info.st_gid);
+    expectNoTemporaryFiles();
+}
+
 TEST_F(PolicyFileTest, PreservesOldFileWhenBufferedCloseFails)
 {
     // The small policy fits in stdio's buffer; fclose must detect the failed flush.

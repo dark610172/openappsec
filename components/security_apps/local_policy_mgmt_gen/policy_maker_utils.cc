@@ -202,9 +202,14 @@ PolicyMakerUtils::dumpPolicyToFile(
         unlink(temporary_name.data());
     });
 
-    // Preserve existing regular-file permissions; new policy files stay private (0600).
+    // Preserve existing regular-file permissions and, when allowed, ownership; new policy files stay private (0600).
     struct stat existing;
     if (stat(policy_path.c_str(), &existing) == 0 && S_ISREG(existing.st_mode)) {
+        if (fchown(fd, existing.st_uid, existing.st_gid) != 0) {
+            // Best effort: an unprivileged caller cannot hand the file to another owner or group.
+            dbgWarning(D_NGINX_POLICY) << "Could not keep owner of " << policy_path
+                << ", Error: " << strerror(errno);
+        }
         if (fchmod(fd, existing.st_mode & 0777) != 0) {
             dbgWarning(D_NGINX_POLICY) << "Could not set policy permissions for " << policy_path
                 << ", Error: " << strerror(errno);
