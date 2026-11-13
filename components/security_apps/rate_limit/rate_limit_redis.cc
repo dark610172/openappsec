@@ -2,6 +2,22 @@
 
 #include <cstring>
 
+redisContext *
+setRateLimitRedisTimeout(
+    redisContext *context,
+    const timeval &timeout,
+    int (*set_timeout)(redisContext *, const timeval),
+    void (*free_context)(redisContext *)
+)
+{
+    if (context == nullptr) return nullptr;
+    if (set_timeout(context, timeout) != REDIS_OK) {
+        free_context(context);
+        return nullptr;
+    }
+    return context;
+}
+
 namespace
 {
 

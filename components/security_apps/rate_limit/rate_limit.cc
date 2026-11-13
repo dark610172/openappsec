@@ -9,6 +9,7 @@
 #include "i_mainloop.h"
 #include "i_time_get.h"
 #include "rate_limit_config.h"
+#include "rate_limit_ip.h"
 #include "rate_limit_redis.h"
 #include "nano_attachment_common.h"
 #include "http_inspection_events.h"
@@ -556,14 +557,6 @@ public:
         return condition_map;
     }
 
-    string
-    ipAddrToStr(const IPAddr& ip_address) const
-    {
-        char str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(ip_address), str, INET_ADDRSTRLEN);
-        return string(str);
-    }
-
     Maybe<void>
     connectRedis()
     {
@@ -586,6 +579,12 @@ public:
         }
 
         if (context == nullptr) return genError("");
+
+        context = setRateLimitRedisTimeout(context, timeout, redisSetTimeout, redisFree);
+        if (context == nullptr) {
+            dbgDebug(D_RATE_LIMIT) << "Failed to set Redis command timeout";
+            return genError("");
+        }
 
         redis = context;
         if (!loadRedisScript()) {

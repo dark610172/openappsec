@@ -10,6 +10,14 @@
 
 enum class RateLimitVerdict { ACCEPT, DROP, DROP_AND_LOG };
 
+// Takes ownership of a connected context on failure; only returns usable connections.
+redisContext *setRateLimitRedisTimeout(
+    redisContext *context,
+    const timeval &timeout,
+    int (*set_timeout)(redisContext *, const timeval),
+    void (*free_context)(redisContext *)
+);
+
 // Allows a reconnect attempt at most once per interval, so a Redis that accepts connections but keeps
 // rejecting SCRIPT LOAD (for example an ACL denial) cannot cause a reconnect on every request.
 class ReconnectGate
