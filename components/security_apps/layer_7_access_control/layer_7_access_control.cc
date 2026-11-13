@@ -392,11 +392,16 @@ Layer7AccessControl::Impl::init()
     int cache_expiration_in_seconds = 30;
     string cache_expiration_env = getenv("CROWDSEC_CACHE_EXPIRATION") ? getenv("CROWDSEC_CACHE_EXPIRATION") : "";
     if (!cache_expiration_env.empty()) {
-        if (
-            all_of(cache_expiration_env.begin(), cache_expiration_env.end(), ::isdigit)
-            && stoi(cache_expiration_env) > 0
-        ) {
-            cache_expiration_in_seconds = stoi(cache_expiration_env);
+        int parsed_expiration = 0;
+        if (all_of(cache_expiration_env.begin(), cache_expiration_env.end(), ::isdigit)) {
+            try {
+                parsed_expiration = stoi(cache_expiration_env);
+            } catch (const exception &) {
+                parsed_expiration = 0;  // too large for int: treat as invalid
+            }
+        }
+        if (parsed_expiration > 0) {
+            cache_expiration_in_seconds = parsed_expiration;
             dbgInfo(D_L7_ACCESS_CONTROL)
                 << "Successfully read cache expiration value from env: "
                 << cache_expiration_env;

@@ -266,6 +266,25 @@ Layer7AccessControlTest::verifyReport(
     EXPECT_THAT(log, HasSubstr("\"externalVendorRecommendationOriginDetails\": \"manual 'ban' from 'localhost'\""));
 }
 
+struct CacheExpirationEnvGuard
+{
+    explicit CacheExpirationEnvGuard(const char *value) { setenv("CROWDSEC_CACHE_EXPIRATION", value, 1); }
+    ~CacheExpirationEnvGuard() { unsetenv("CROWDSEC_CACHE_EXPIRATION"); }
+};
+
+// The base fixture constructor calls init(). A CROWDSEC_CACHE_EXPIRATION value that does not fit in an int
+// used to make std::stoi throw std::out_of_range there; init() must fall back to the default instead.
+class Layer7AccessControlHugeTtlTest : private CacheExpirationEnvGuard, public Layer7AccessControlTest
+{
+public:
+    Layer7AccessControlHugeTtlTest() : CacheExpirationEnvGuard("99999999999999999999") {}
+};
+
+TEST_F(Layer7AccessControlHugeTtlTest, InitSurvivesOutOfRangeCacheExpiration)
+{
+    SUCCEED();
+}
+
 TEST_F(Layer7AccessControlTest, ReturnAcceptVerdict)
 {
     stringstream ss_conf(prevent_settings + local_intelligence + policy);
