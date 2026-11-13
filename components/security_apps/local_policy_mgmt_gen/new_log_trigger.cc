@@ -36,7 +36,7 @@ NewAppsecTriggerAdditionalSuspiciousEventsLogging::load(cereal::JSONInputArchive
     dbgTrace(D_LOCAL_POLICY) << "Loading AppSec Trigger - Additional Suspicious Events Logging";
     parseAppsecJSONKey<bool>("enabled", enabled, archive_in, true);
     parseAppsecJSONKey<bool>("responseBody", response_body, archive_in, false);
-    parseAppsecJSONKey<bool>("responseCode", response_code, archive_in, true);
+    parseAppsecJSONKey<bool>("responseCode", response_code, archive_in, false);
     parseAppsecJSONKey<string>("minSeverity", minimum_severity, archive_in, "high");
     if (valid_severities.count(minimum_severity) == 0) {
         dbgWarning(D_LOCAL_POLICY)
@@ -59,6 +59,12 @@ bool
 NewAppsecTriggerAdditionalSuspiciousEventsLogging::isResponseBody() const
 {
     return response_body;
+}
+
+bool
+NewAppsecTriggerAdditionalSuspiciousEventsLogging::isResponseCode() const
+{
+    return response_code;
 }
 
 const string &
@@ -128,17 +134,87 @@ NewAppsecTriggerExtendedLogging::isUrlQuery() const
     return url_query;
 }
 
+namespace
+{
+
+bool
+isLoggingServiceArray(cereal::JSONInputArchive &archive_in, cereal::size_type &size)
+{
+    try {
+        archive_in.loadSize(size);
+        return true;
+    } catch (const cereal::RapidJSONException &) {
+        // loadSize requires an array. On an object it throws without changing the archive state.
+        return false;
+    }
+}
+
+template <typename T>
+void
+parseLoggingServiceField(const string &name, T &value, cereal::JSONInputArchive &archive_in, const T &fallback)
+{
+    try {
+        archive_in(cereal::make_nvp(name, value));
+    } catch (const cereal::RapidJSONException &) {
+        throw PolicyGenException("Logging service field '" + name + "' has an invalid type");
+    } catch (const cereal::Exception &) {
+        archive_in.setNextName(nullptr);
+        value = fallback;
+    }
+}
+
+void
+parseLoggingService(const string &name, NewLoggingService &service, cereal::JSONInputArchive &archive_in)
+{
+    archive_in.setNextName(name.c_str());
+    try {
+        archive_in.startNode();
+    } catch (const cereal::RapidJSONException &) {
+        throw PolicyGenException(name + " must be an object or an array of at most one object");
+    } catch (const cereal::Exception &) {
+        // This optional destination is absent; startNode has not entered a node.
+        archive_in.setNextName(nullptr);
+        service = NewLoggingService();
+        return;
+    }
+
+    cereal::size_type size = 0;
+    bool is_array = isLoggingServiceArray(archive_in, size);
+    if (is_array && size > 1) {
+        throw PolicyGenException(name + " supports at most one destination; received " + to_string(size));
+    }
+    try {
+        service = NewLoggingService();
+        if (!is_array) {
+            service.load(archive_in);
+        } else if (size == 1) {
+            archive_in(service);
+        }
+    } catch (const cereal::Exception &) {
+        throw PolicyGenException(name + " must contain a logging service object with valid field types");
+    } catch (const PolicyGenException &e) {
+        throw PolicyGenException(name + ": " + e.what());
+    }
+    archive_in.finishNode();
+}
+
+} // namespace
+
 void
 NewLoggingService::load(cereal::JSONInputArchive &archive_in)
 {
-    parseAppsecJSONKey<string>("address", address, archive_in);
-    parseAppsecJSONKey<string>("proto", proto, archive_in, "tcp");
+    cereal::size_type size = 0;
+    if (isLoggingServiceArray(archive_in, size)) {
+        throw PolicyGenException("Logging service destination must be an object");
+    }
+    parseLoggingServiceField<string>("address", address, archive_in, "");
+    parseLoggingServiceField<string>("proto", proto, archive_in, "tcp");
     if (valid_protocols.count(proto) == 0) {
         dbgWarning(D_LOCAL_POLICY) << "AppSec Logging Service - proto invalid: " << proto;
         throw PolicyGenException("AppSec Logging Service - proto invalid: " + proto);
     }
 
-    parseAppsecJSONKey<int>("port", port, archive_in, 514);
+    parseLoggingServiceField<int>("port", port, archive_in, 514);
 }
 
 const string &
@@ -195,8 +271,8 @@ NewAppsecTriggerLogDestination::load(cereal::JSONInputArchive &archive_in)
     parseAppsecJSONKey<NewStdoutLogging>("stdout", stdout_log, archive_in);
     parseAppsecJSONKey<bool>("logToAgent", agent_local, archive_in, true);
     beautify_logs = stdout_log.getFormat() == "json-formatted";
-    parseAppsecJSONKey<NewLoggingService>("syslogService", syslog_service, archive_in);
-    parseAppsecJSONKey<NewLoggingService>("cefService", cef_service, archive_in);
+    parseLoggingService("syslogService", syslog_service, archive_in);
+    parseLoggingService("cefService", cef_service, archive_in);
 }
 
 int

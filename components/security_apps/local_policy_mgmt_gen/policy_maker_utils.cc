@@ -604,7 +604,11 @@ getAppsecTrustedSourceSpecs(const string &trusted_sources_annotation_name, const
 
 template<class T>
 LogTriggerSection
-extractLogTriggerData(const string &trigger_annotation_name, const T &trigger_spec){
+extractLogTriggerData(
+    const string &trigger_annotation_name,
+    const T &trigger_spec,
+    bool response_code = false)
+{
     string verbosity = "Standard";
     string extendLoggingMinSeverity =
         trigger_spec.getAppsecTriggerAdditionalSuspiciousEventsLogging().getMinimumSeverity();
@@ -661,7 +665,8 @@ extractLogTriggerData(const string &trigger_annotation_name, const T &trigger_sp
         cefIpAddress,
         syslogPortNum,
         syslogIpAddress,
-        beautify_logs
+        beautify_logs,
+        response_code
     );
     return log;
 }
@@ -685,7 +690,11 @@ createLogTriggerSection<V1beta2AppsecLinuxPolicy>(
 {
     auto trigger_spec =
         getAppsecTriggerSpec<V1beta2AppsecLinuxPolicy, NewAppsecLogTrigger>(trigger_annotation_name, policy);
-    return extractLogTriggerData<NewAppsecLogTrigger>(trigger_annotation_name, trigger_spec);
+    return extractLogTriggerData<NewAppsecLogTrigger>(
+        trigger_annotation_name,
+        trigger_spec,
+        trigger_spec.getAppsecTriggerAdditionalSuspiciousEventsLogging().isResponseCode()
+    );
 }
 
 template<class T>

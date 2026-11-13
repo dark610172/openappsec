@@ -46,7 +46,8 @@ LogTriggerSection::LogTriggerSection(
     const string &_cefIpAddress,
     int _syslogPortNum,
     const string &_syslogIpAddress,
-    bool _beautify_logs)
+    bool _beautify_logs,
+    bool _responseCode)
         :
     name(_name),
     verbosity(_verbosity),
@@ -58,6 +59,7 @@ LogTriggerSection::LogTriggerSection(
     logTolocalTuning(_logTolocalTuning),
     logToSyslog(_logToSyslog),
     responseBody(_responseBody),
+    responseCode(_responseCode),
     tpDetect(_tpDetect),
     tpPrevent(_tpPrevent),
     acAllow(_acAllow),
@@ -104,7 +106,7 @@ LogTriggerSection::save(cereal::JSONOutputArchive &out_ar) const
         cereal::make_nvp("logTolocalTuning",    logTolocalTuning),
         cereal::make_nvp("logToSyslog",              logToSyslog),
         cereal::make_nvp("responseBody",             responseBody),
-        cereal::make_nvp("responseCode",             false),
+        cereal::make_nvp("responseCode",             responseCode),
         cereal::make_nvp("tpDetect",                 tpDetect),
         cereal::make_nvp("tpPrevent",                tpPrevent),
         cereal::make_nvp("webBody",                  webBody),

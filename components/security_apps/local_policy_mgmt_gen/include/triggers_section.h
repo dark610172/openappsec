@@ -55,7 +55,8 @@ public:
         const std::string &_cefIpAddress,
         int _syslogPortNum,
         const std::string &_syslogIpAddress,
-        bool _beautify_logs
+        bool _beautify_logs,
+        bool _responseCode = false
     );
 
     void save(cereal::JSONOutputArchive &out_ar) const;
@@ -76,6 +77,7 @@ private:
     bool logTolocalTuning;
     bool logToSyslog;
     bool responseBody;
+    bool responseCode = false;
     bool tpDetect;
     bool tpPrevent;
     bool acAllow;

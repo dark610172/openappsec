@@ -1,0 +1,22 @@
+{
+    "apiVersion": "v1beta2",
+    "policies": {
+        "default": {
+            "mode": "prevent",
+            "threatPreventionPractices": [],
+            "accessControlPractices": [],
+            "triggers": ["log"],
+            "customResponse": ""
+        },
+        "specificRules": []
+    },
+    "logTriggers": [{
+        "name": "log",
+        "accessControlLogging": {},
+        "additionalSuspiciousEventsLogging": {},
+        "appsecLogging": {},
+        "extendedLogging": {},
+        "logDestination": {"local-tuning": false}
+    }],
+    "autoUpgrade": {"mode": "manual"}
+}

@@ -44,6 +44,7 @@ public:
 
     bool isEnabled() const;
     bool isResponseBody() const;
+    bool isResponseCode() const;
     const std::string & getMinimumSeverity() const;
 
 private:
