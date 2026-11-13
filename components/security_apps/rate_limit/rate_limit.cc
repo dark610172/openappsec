@@ -639,7 +639,8 @@ public:
     {
         dbgFlow(D_RATE_LIMIT) << "Trying to reconnect to redis after failure to invoke a redis command";
         static bool is_reconnecting = false;
-        if (!is_reconnecting) {
+        static ReconnectGate reconnect_gate(chrono::seconds(5));
+        if (!is_reconnecting && reconnect_gate.allow(ReconnectGate::Clock::now())) {
             is_reconnecting = true;
             Singleton::Consume<I_MainLoop>::by<RateLimit>()->addOneTimeRoutine(
                 I_MainLoop::RoutineType::System,

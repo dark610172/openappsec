@@ -368,3 +368,14 @@ TEST_F(RateLimitRedisTest, UnexpectedReplyAcceptsAndInvalidatesScript)
 }
 
 } // namespace
+
+TEST(ReconnectGateTest, AllowsOneAttemptPerInterval)
+{
+    ReconnectGate gate(std::chrono::seconds(5));
+    auto start = ReconnectGate::Clock::now();
+    EXPECT_TRUE(gate.allow(start));
+    EXPECT_FALSE(gate.allow(start + std::chrono::seconds(1)));
+    EXPECT_FALSE(gate.allow(start + std::chrono::milliseconds(4999)));
+    EXPECT_TRUE(gate.allow(start + std::chrono::seconds(5)));
+    EXPECT_FALSE(gate.allow(start + std::chrono::seconds(6)));
+}
