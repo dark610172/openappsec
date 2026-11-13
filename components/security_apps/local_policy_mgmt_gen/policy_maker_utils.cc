@@ -17,11 +17,22 @@
 
 #include "local_policy_mgmt_gen.h"
 #include "log_generator.h"
+#include "scope_exit.h"
 
 using namespace std;
 
 USE_DEBUG_FLAG(D_NGINX_POLICY);
 USE_DEBUG_FLAG(D_LOCAL_POLICY);
+
+static string
+quoteShellArg(const string &arg)
+{
+    string quoted = "'";
+    for (char ch : arg) {
+        quoted += ch == '\'' ? "'\"'\"'" : string(1, ch);
+    }
+    return quoted + "'";
+}
 
 static const std::unordered_map<std::string, std::string> key_to_source_identefier_val = {
     { "sourceip", "Source IP"},
@@ -67,7 +78,7 @@ Maybe<T>
 PolicyMakerUtils::openFileAsJson(const string &path)
 {
     auto maybe_file_as_json = Singleton::Consume<I_ShellCmd>::by<LocalPolicyMgmtGenerator>()->getExecOutput(
-        getFilesystemPathConfig() + "/bin/yq eval " + path + " -o json"
+        quoteShellArg(getFilesystemPathConfig() + "/bin/yq") + " eval " + quoteShellArg(path) + " -o json"
     );
 
     if (!maybe_file_as_json.ok()) {
@@ -1066,27 +1077,35 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
         << (is_temporary ? " temporary" : "") << " file " << path;
 
     auto snort_script_path = getFilesystemPathConfig() + "/scripts/snort_to_ips_local.py";
-    auto tmp_out = "/tmp/" + file_name + ".out";
-    auto tmp_err = "/tmp/" + file_name + ".err";
-    auto cmd = "python3 " + snort_script_path + " " + path + " " + tmp_out + " " + tmp_err;
+    auto separator = file_name.find_last_of('/');
+    auto tmp_name = file_name;
+    if (separator != string::npos) {
+        // Preserve legacy names for plain files; distinguish equal basenames from different directories.
+        tmp_name = file_name.substr(separator + 1) + "." + to_string(boost::uuids::random_generator()());
+    }
+    auto tmp_out = "/tmp/" + tmp_name + ".out";
+    auto tmp_err = "/tmp/" + tmp_name + ".err";
+    auto i_orchestration_tools = Singleton::Consume<I_OrchestrationTools>::by<LocalPolicyMgmtGenerator>();
+    auto cleanup = make_scope_exit([&]() {
+        i_orchestration_tools->removeFile(tmp_out);
+        i_orchestration_tools->removeFile(tmp_err);
+    });
+    auto cmd = "python3 " + quoteShellArg(snort_script_path) + " " + quoteShellArg(path) + " "
+        + quoteShellArg(tmp_out) + " " + quoteShellArg(tmp_err);
 
-    auto res = Singleton::Consume<I_ShellCmd>::by<LocalPolicyMgmtGenerator>()->getExecOutput(cmd);
+    auto res = Singleton::Consume<I_ShellCmd>::by<LocalPolicyMgmtGenerator>()->getExecReturnCode(cmd);
 
-    if (!res.ok()) {
-        dbgWarning(D_LOCAL_POLICY) << res.getErr();
-        return;
+    if (!res.ok() || res.unpack() != 0) {
+        auto error = res.ok() ? "exit code " + to_string(res.unpack()) : res.getErr();
+        throw PolicyGenException("Failed to convert Snort file " + path + ": " + error);
     }
 
     Maybe<ProtectionsSectionWrapper> maybe_protections = openFileAsJson<ProtectionsSectionWrapper>(tmp_out);
-    if (!maybe_protections.ok()){
-        dbgWarning(D_LOCAL_POLICY) << maybe_protections.getErr();
-        return;
+    if (!maybe_protections.ok()) {
+        throw PolicyGenException("Failed to read converted Snort file " + path + ": " + maybe_protections.getErr());
     }
 
-    auto i_orchestration_tools = Singleton::Consume<I_OrchestrationTools>::by<LocalPolicyMgmtGenerator>();
     if (is_temporary) i_orchestration_tools->removeFile(path);
-    i_orchestration_tools->removeFile(tmp_out);
-    i_orchestration_tools->removeFile(tmp_err);
 
     snort_protections[path] = ProtectionsSection(
         maybe_protections.unpack().getProtections(),
@@ -1780,6 +1799,7 @@ PolicyMakerUtils::proccesSingleAppsecPolicy(
         );
     } catch (const PolicyGenException &e) {
         dbgDebug(D_LOCAL_POLICY) << "Policy generation failed. Error: " << e.what();
+        clearElementsMaps();
         return "";
     }
 }

@@ -267,8 +267,14 @@ PolicyMakerUtils::proccesMultipleAppsecPolicies(
     const std::string &policy_version,
     const std::string &local_appsec_policy_path)
 {
-    for (const auto &appsec_policy : appsec_policies) {
-        createAgentPolicyFromAppsecPolicy<T, R>(appsec_policy.first, appsec_policy.second);
+    try {
+        for (const auto &appsec_policy : appsec_policies) {
+            createAgentPolicyFromAppsecPolicy<T, R>(appsec_policy.first, appsec_policy.second);
+        }
+    } catch (const PolicyGenException &e) {
+        dbgDebug(D_LOCAL_POLICY) << "Policy generation failed. Error: " << e.what();
+        clearElementsMaps();
+        return "";
     }
 
     PolicyWrapper policy_wrapper = combineElementsToPolicy(policy_version);
