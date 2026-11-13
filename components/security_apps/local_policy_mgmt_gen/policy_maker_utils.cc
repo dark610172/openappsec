@@ -1208,7 +1208,8 @@ PolicyMakerUtils::createRateLimitSection(
         access_control_practice.getRateLimit().getMode(access_control_practice.getMode(default_mode)),
         practice_id,
         rule_annotations[AnnotationTypes::ACCESS_CONTROL_PRACTICE],
-        rules
+        rules,
+        web_user_res_triggers[rule_annotations[AnnotationTypes::WEB_USER_RES]].getTriggerId()
     );
 }
 

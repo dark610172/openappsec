@@ -79,11 +79,13 @@ RateLimitSection::RateLimitSection(
     const std::string &_mode,
     const std::string &_practice_id,
     const std::string &_name,
-    const std::vector<RateLimitRulesSection> &_rules)
+    const std::vector<RateLimitRulesSection> &_rules,
+    const std::string &_web_user_response_id)
         :
     mode(_mode),
     practice_id(_practice_id),
     name(_name),
+    web_user_response_id(_web_user_response_id),
     rules(_rules)
 {
     bool any = asset_name == "Any" && url == "Any" && uri == "Any";
@@ -99,6 +101,7 @@ RateLimitSection::save(cereal::JSONOutputArchive &out_ar) const
         cereal::make_nvp("mode",            mode),
         cereal::make_nvp("practiceId",      practice_id),
         cereal::make_nvp("name",            name),
+        cereal::make_nvp("webUserResponseId", web_user_response_id),
         cereal::make_nvp("rules",           rules)
     );
 }

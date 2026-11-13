@@ -97,7 +97,8 @@ public:
     const std::string &_mode,
     const std::string &_practice_id,
     const std::string &_name,
-    const std::vector<RateLimitRulesSection> &_rules);
+    const std::vector<RateLimitRulesSection> &_rules,
+    const std::string &_web_user_response_id);
 
     void save(cereal::JSONOutputArchive &out_ar) const;
     const std::string & getId() const;
@@ -109,6 +110,7 @@ private:
     std::string                                 mode;
     std::string                                 practice_id;
     std::string                                 name;
+    std::string                                 web_user_response_id;
     std::vector<RateLimitRulesSection>          rules;
 };
 

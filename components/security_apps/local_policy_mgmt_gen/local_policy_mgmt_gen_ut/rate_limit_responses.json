@@ -1,0 +1,65 @@
+{
+    "apiVersion": "v1beta2",
+    "policies": {
+        "default": {
+            "mode": "prevent",
+            "threatPreventionPractices": [],
+            "accessControlPractices": ["default-limit"],
+            "customResponse": "code"
+        },
+        "specificRules": [
+            {
+                "host": "page.example",
+                "mode": "prevent",
+                "threatPreventionPractices": [],
+                "accessControlPractices": ["page-limit"],
+                "customResponse": "page"
+            },
+            {
+                "host": "inherited.example",
+                "mode": "prevent",
+                "threatPreventionPractices": [],
+                "accessControlPractices": ["inherited-limit"],
+                "customResponse": ""
+            }
+        ]
+    },
+    "accessControlPractices": [
+        {
+            "name": "default-limit",
+            "rateLimit": {
+                "overrideMode": "prevent",
+                "rules": [{"limit": 10, "uri": "/", "unit": "second"}]
+            }
+        },
+        {
+            "name": "page-limit",
+            "rateLimit": {
+                "overrideMode": "prevent",
+                "rules": [{"limit": 20, "uri": "/", "unit": "second"}]
+            }
+        },
+        {
+            "name": "inherited-limit",
+            "rateLimit": {
+                "overrideMode": "prevent",
+                "rules": [{"limit": 30, "uri": "/", "unit": "second"}]
+            }
+        }
+    ],
+    "customResponses": [
+        {
+            "name": "code",
+            "mode": "response-code-only",
+            "httpResponseCode": 429
+        },
+        {
+            "name": "page",
+            "mode": "block-page",
+            "httpResponseCode": 403,
+            "messageTitle": "Rate limit exceeded",
+            "messageBody": "Try again later"
+        }
+    ],
+    "autoUpgrade": {"mode": "manual"}
+}
