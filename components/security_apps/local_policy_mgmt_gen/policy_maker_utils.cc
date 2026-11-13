@@ -18,12 +18,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "local_policy_mgmt_gen.h"
 #include "log_generator.h"
 #include "scope_exit.h"
+#include "cereal/external/rapidjson/document.h"
 
 using namespace std;
 
@@ -1149,9 +1151,70 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
         throw PolicyGenException("Failed to convert Snort file " + path + ": " + error);
     }
 
+    // Diagnostics are JSON, with one {Error, Line} entry per rejected rule.
+    // Older converters only emit Errors; InternalErrors is optional.
+    ifstream errors_file(tmp_err);
+    stringstream errors_text;
+    errors_text << errors_file.rdbuf();
+    rapidjson::Document errors;
+    errors.Parse(errors_text.str().c_str());
+    if (!errors_file.is_open() || errors_file.bad() || errors.HasParseError() || !errors.IsObject()) {
+        dbgWarning(D_LOCAL_POLICY) << "Could not read Snort conversion diagnostics: " << tmp_err;
+    } else {
+        size_t failed_rules = 0;
+        size_t internal_errors = 0;
+        size_t preview_lines = 0;
+        stringstream preview;
+        for (const auto &key : {"Errors", "InternalErrors"}) {
+            if (!errors.HasMember(key) || !errors[key].IsArray()) continue;
+            const auto &entries = errors[key];
+            failed_rules += entries.Size();
+            if (string(key) == "InternalErrors") internal_errors = entries.Size();
+            for (const auto &entry : entries.GetArray()) {
+                if (preview_lines == 3) break;
+                ++preview_lines;
+                if (!entry.IsObject()) continue;
+                preview << " [Line ";
+                if (entry.HasMember("Line") && entry["Line"].IsUint()) preview << entry["Line"].GetUint();
+                else preview << "?";
+                preview << ": ";
+                if (entry.HasMember("Error") && entry["Error"].IsString()) {
+                    preview << string(entry["Error"].GetString()).substr(0, 240);
+                }
+                preview << "]";
+            }
+        }
+        if (failed_rules != 0) {
+            dbgWarning(D_LOCAL_POLICY) << "Snort conversion failed for " << failed_rules
+                << " rules (internal errors: " << internal_errors << "). Error file: " << tmp_err
+                << ". First errors:" << preview.str();
+        }
+        if (internal_errors != 0) {
+            throw PolicyGenException("Internal errors converting Snort file " + path + ": " + tmp_err);
+        }
+    }
+
+    // Match the converter's input filtering: blank lines and comments are not rules.
+    ifstream input_file(path);
+    string line;
+    bool has_rules = false;
+    while (getline(input_file, line)) {
+        auto first = line.find_first_not_of(" \t\r\n");
+        if (first != string::npos && line[first] != '#') {
+            has_rules = true;
+            break;
+        }
+    }
+    if (has_rules && !ifstream(tmp_out).good()) {
+        throw PolicyGenException("Missing converted Snort signature package for " + path + ": " + tmp_out);
+    }
+
     Maybe<ProtectionsSectionWrapper> maybe_protections = openFileAsJson<ProtectionsSectionWrapper>(tmp_out);
     if (!maybe_protections.ok()) {
         throw PolicyGenException("Failed to read converted Snort file " + path + ": " + maybe_protections.getErr());
+    }
+    if (has_rules && maybe_protections.unpack().getProtections().empty()) {
+        throw PolicyGenException("No signatures converted from non-empty Snort file " + path);
     }
 
     if (is_temporary) i_orchestration_tools->removeFile(path);

@@ -6,11 +6,15 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <cstdio>
+#include <fstream>
 
 #include "cereal/external/rapidjson/document.h"
 
 using namespace std;
 using namespace testing;
+
+USE_DEBUG_FLAG(D_LOCAL_POLICY);
 
 namespace
 {
@@ -74,6 +78,14 @@ protected:
         environment.preload();
         environment.init();
         config.preload();
+        Debug::setUnitTestFlag(D_LOCAL_POLICY, Debug::DebugLevel::WARNING);
+        Debug::setNewDefaultStdout(&debug_output);
+    }
+
+    void
+    TearDown() override
+    {
+        Debug::setNewDefaultStdout(&cout);
     }
 
     string
@@ -153,22 +165,60 @@ protected:
                 tmp_out = paths[1].str() + ".out";
                 tmp_err = paths[2].str() + ".err";
                 EXPECT_TRUE(output_paths.insert(tmp_out).second);
+                if (result.ok() && result.unpack() == 0) {
+                    if (write_errors) {
+                        ofstream errors(tmp_err);
+                        errors << converter_errors;
+                        EXPECT_TRUE(errors.good());
+                    }
+                    if (write_output) {
+                        ofstream output(tmp_out);
+                        output << converter_output;
+                        EXPECT_TRUE(output.good());
+                    }
+                }
                 return result;
             }));
         EXPECT_CALL(tools, removeFile(_)).Times(2)
             .WillRepeatedly(Invoke([this](const string &path) {
                 EXPECT_TRUE(path == tmp_out || path == tmp_err);
                 removed_paths.push_back(path);
+                std::remove(path.c_str());
                 return true;
             }));
     }
 
     void
-    expectConvertedOutput(Maybe<string> result = string(R"({"IPSSnortSigs":{"protections":[]}})"))
+    expectConvertedOutput(Maybe<string> result)
     {
         EXPECT_CALL(shell, getExecOutput(Truly([this](const string &cmd) {
             return cmd == "'/etc/cp/bin/yq' eval '" + tmp_out + "' -o json";
         }), _, _)).WillOnce(Return(result));
+    }
+
+    void
+    expectConvertedOutput()
+    {
+        EXPECT_CALL(shell, getExecOutput(Truly([this](const string &cmd) {
+            return cmd == "'/etc/cp/bin/yq' eval '" + tmp_out + "' -o json";
+        }), _, _)).WillOnce(Invoke([this](const string &, uint, bool) -> Maybe<string> {
+            ifstream output(tmp_out);
+            stringstream contents;
+            contents << output.rdbuf();
+            return contents.str();
+        }));
+    }
+
+    string
+    signaturePackage()
+    {
+        return R"({"IPSSnortSigs":{"protections":[{
+            "protectionMetadata":{
+                "silent":false,"protectionName":"test","severity":"High","confidenceLevel":"High",
+                "performanceImpact":"Low","lastUpdate":"20261114","maintrainId":"1","tags":[],"cveList":[]
+            },
+            "detectionRules":{"type":"SSM","SSM":"test","keywords":"","context":["HTTP_RAW"]}
+        }]}})";
     }
 
     string
@@ -209,11 +259,133 @@ protected:
     string tmp_err;
     set<string> output_paths;
     vector<string> removed_paths;
+    ostringstream debug_output;
+    string converter_errors = R"({"Errors":[],"InternalErrors":[]})";
+    string converter_output = R"({"IPSSnortSigs":{"protections":[]}})";
+    bool write_errors = true;
+    bool write_output = true;
 };
 
 TEST_F(SnortConversionTest, PreservesBasenameOutputPath)
 {
     checkSuccessfulConversion("custom.rules", "'custom.rules'", "custom.rules");
+}
+
+TEST_F(SnortConversionTest, ReportsFailedRulesAndKeepsConvertedSignatures)
+{
+    CPTestTempfile input({
+        "alert http any any -> any any (sid:1;)",
+        "alert http any any -> any any (sid:2;)",
+        "alert http any any -> any any (sid:3;)",
+        "alert http any any -> any any (sid:4;)",
+        "alert http any any -> any any (sid:5;)"
+    });
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    converter_output = signaturePackage();
+    // Legacy reports have no InternalErrors field. Extra fields must be harmless.
+    converter_errors = R"({"Errors":[
+        {"Error":"unsupported http_encode","Line":2},
+        {"Error":"second rejection","Line":3},
+        {"Error":"third rejection","Line":4},
+        {"Error":"fourth rejection omitted from preview","Line":5}
+    ],"extra":"ignored"})";
+    expectConversion(input.fname, "'" + input.fname + "'", basename);
+    expectConvertedOutput();
+    CPTestTempfile output;
+    string generated = generate(input.fname, output.fname);
+    rapidjson::Document document;
+    document.Parse(generated.c_str());
+    ASSERT_FALSE(document.HasParseError());
+    EXPECT_EQ(1u, document["snort"]["IPSSnortSigs"]["protections"][0]["protections"].Size());
+    EXPECT_EQ(generated, output.readFile());
+    EXPECT_THAT(debug_output.str(), HasSubstr("Snort conversion failed for 4 rules"));
+    EXPECT_THAT(debug_output.str(), HasSubstr("Line 2: unsupported http_encode"));
+    EXPECT_THAT(debug_output.str(), HasSubstr("third rejection"));
+    EXPECT_THAT(debug_output.str(), Not(HasSubstr("fourth rejection")));
+    EXPECT_THAT(debug_output.str(), HasSubstr(tmp_err));
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, RejectsInternalErrorsDespiteSuccessfulConverterExit)
+{
+    converter_output = signaturePackage();
+    converter_errors = R"({"Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}]})";
+    expectConversion("custom.rules", "'custom.rules'", "custom.rules");
+    // Permit the old code to read valid output, so the empty-result assertion catches the regression.
+    EXPECT_CALL(shell, getExecOutput(_, _, _)).Times(AnyNumber()).WillRepeatedly(Return(converter_output));
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate("custom.rules", output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_THAT(debug_output.str(), HasSubstr("internal errors: 1"));
+    EXPECT_THAT(debug_output.str(), HasSubstr("unexpected exception"));
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, RejectsZeroSignaturesWithNonEmptyInput)
+{
+    CPTestTempfile input({"# comment", "  ", "alert http any any -> any any (sid:1;)"});
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    expectConversion(input.fname, "'" + input.fname + "'", basename);
+    expectConvertedOutput();
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate(input.fname, output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, RejectsMissingPackageWithNonEmptyInput)
+{
+    CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    write_output = false;
+    expectConversion(input.fname, "'" + input.fname + "'", basename);
+    EXPECT_CALL(shell, getExecOutput(_, _, _)).Times(AnyNumber()).WillRepeatedly(Return(signaturePackage()));
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate(input.fname, output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, CleanRunWithRulesKeepsSignaturesWithoutWarning)
+{
+    CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    converter_output = signaturePackage();
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
+    EXPECT_THAT(debug_output.str(), Not(HasSubstr("Snort conversion failed")));
+    EXPECT_THAT(debug_output.str(), Not(HasSubstr("Could not read Snort conversion diagnostics")));
+}
+
+TEST_F(SnortConversionTest, AllowsEmptySignaturesForCommentsOnlyInput)
+{
+    CPTestTempfile input({"  # comment", "  ", ""});
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
+}
+
+TEST_F(SnortConversionTest, MissingDiagnosticsWarnsWithoutFailingGeneration)
+{
+    write_errors = false;
+    checkSuccessfulConversion("custom.rules", "'custom.rules'", "custom.rules");
+    const string warning = "Could not read Snort conversion diagnostics: " + tmp_err;
+    string log = debug_output.str();
+    auto position = log.find(warning);
+    ASSERT_NE(string::npos, position);
+    EXPECT_EQ(string::npos, log.find(warning, position + warning.size()));
+}
+
+TEST_F(SnortConversionTest, MalformedDiagnosticsWarnsWithoutFailingGeneration)
+{
+    converter_errors = "not JSON";
+    checkSuccessfulConversion("custom.rules", "'custom.rules'", "custom.rules");
+    const string warning = "Could not read Snort conversion diagnostics: " + tmp_err;
+    string log = debug_output.str();
+    auto position = log.find(warning);
+    ASSERT_NE(string::npos, position);
+    EXPECT_EQ(string::npos, log.find(warning, position + warning.size()));
 }
 
 TEST_F(SnortConversionTest, UsesBasenameForRelativeSubdirectory)

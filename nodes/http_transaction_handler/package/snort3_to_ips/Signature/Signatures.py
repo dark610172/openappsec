@@ -36,7 +36,7 @@ class Signatures:
         self.error_rules = []
 
     def output_errors(self, output_pf):
-        output = {"Errors": self.error_rules}
+        output = {"Errors": self.error_rules, "InternalErrors": self.error_internal}
         with open(output_pf, 'w') as f:
             json.dump(output, f, ensure_ascii=False, indent=4)
 
