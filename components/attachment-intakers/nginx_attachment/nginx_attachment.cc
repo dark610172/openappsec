@@ -1507,8 +1507,13 @@ private:
             nginx_attachment_event.addTrafficVerdictCounter(nginxAttachmentEvent::trafficVerdict::DROP);
             verdict_to_send.modification_count = 1;
             ScopedContext ctx;
-            set<string> triggers_set{verdict.getWebUserResponseID()};
-            ctx.registerValue<set<GenericConfigId>>(TriggerMatcher::ctx_key, triggers_set);
+            // A DROP without a response ID (IPS, Snort, Layer 7 access control, internal failures) must not
+            // register an empty trigger set: that set matches nothing and forces the built-in default page.
+            // Without it the lookup below uses the web user response of the matching rule.
+            if (!verdict.getWebUserResponseID().empty()) {
+                set<string> triggers_set{verdict.getWebUserResponseID()};
+                ctx.registerValue<set<GenericConfigId>>(TriggerMatcher::ctx_key, triggers_set);
+            }
             auto web_trigger_config = getConfiguration<WebTriggerConf>("rulebase", "webUserResponse");
             WebTriggerConf web_trigger_conf = web_trigger_config.ok() ?
                 web_trigger_config.unpack() : WebTriggerConf::default_trigger_conf;
