@@ -325,7 +325,8 @@ GenericMetric::respond(const MetricScrapeEvent &)
     vector<MetricCalc *> allowed_calcs;
     for (auto &calc : prometheus_calcs) {
         auto metric_calc_name = calc->getMetricDotName() != "" ? calc->getMetricDotName() : calc->getMetricName();
-        if (default_metrics.find(metric_calc_name) != default_metrics.end()) {
+        if (default_metrics.find(metric_calc_name) != default_metrics.end() ||
+            default_metrics.find(metric_calc_name + "_" + metric_name) != default_metrics.end()) {
             allowed_calcs.push_back(calc);
         }
     }

@@ -534,6 +534,49 @@ TEST_F(MetricTest, printMetricsTest)
     GenericMetric::fini();
 }
 
+TEST_F(MetricTest, defaultPrometheusAllowlist)
+{
+    stringstream configuration;
+    configuration << "{\"agentSettings\":[{\"key\":\"prometheus\",\"id\":\"id1\",\"value\":\"true\"},";
+    configuration << "{\"key\":\"enable_all_metrics\",\"id\":\"id2\",\"value\":\"false\"}]}\n";
+    ASSERT_TRUE(Singleton::Consume<Config::I_Config>::from(conf)->loadConfiguration(configuration));
+
+    const vector<string> report_names = {
+        "WAAP telemetry", "WAAP traffic telemetry", "WAAP attack type telemetry", "Unrelated report"
+    };
+    for (const auto &report_name : report_names) {
+        SCOPED_TRACE(report_name);
+        GenericMetric metric;
+        Counter base{&metric, "cpuSample"};
+        Counter qualified{&metric, "reservedNgenA"};
+        Counter dotted{&metric, "internalName", "reservedNgenB"_dot};
+        Counter disallowed{&metric, "reservedNgenZ"};
+        metric.init(
+            report_name,
+            ReportIS::AudienceTeam::AGENT_CORE,
+            ReportIS::IssuingEngine::AGENT_CORE,
+            seconds(5),
+            false
+        );
+        base.report(2);
+        qualified.report(3);
+        dotted.report(4);
+        disallowed.report(5);
+
+        const auto metrics = metric.respond(MetricScrapeEvent());
+        const bool allowed_report = report_name != "Unrelated report";
+        ASSERT_EQ(metrics.size(), allowed_report ? 3u : 1u);
+        EXPECT_EQ(metrics[0].name, "cpuSample");
+        EXPECT_EQ(metrics[0].value, "2");
+        if (allowed_report) {
+            EXPECT_EQ(metrics[1].unique_name, "reservedNgenA_" + report_name);
+            EXPECT_EQ(metrics[1].value, "3");
+            EXPECT_EQ(metrics[2].unique_name, "reservedNgenB_" + report_name);
+            EXPECT_EQ(metrics[2].value, "4");
+        }
+    }
+}
+
 TEST_F(MetricTest, getPromeathusMetric)
 {
     MetricScraper metric_scraper;
