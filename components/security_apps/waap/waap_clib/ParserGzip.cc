@@ -47,6 +47,9 @@ size_t ParserGzip::push(const char *buf, size_t len) {
 
         return 0;
     }
+    // A completed member followed by more data starts the next gzip member. The compression stream is kept,
+    // so the total output budget keeps counting across members; garbage after a member fails to decode.
+    if (m_state == s_done) m_state = s_forward;
     switch (m_state) {
     case s_start:
         dbgTrace(D_WAAP_PARSER_GZIP) << "s_start";
@@ -88,12 +91,7 @@ size_t ParserGzip::push(const char *buf, size_t len) {
         break;
     }
     case s_done:
-        if (len > 0) {
-            dbgTrace(D_WAAP_PARSER_GZIP) << " unexpected data after completion, len=" << len;
-            m_state = s_error;
-            return 0; // Return 0 to indicate error
-        }
-        break;
+        break; // unreachable: s_done is converted to s_forward above
     case s_error:
         dbgTrace(D_WAAP_PARSER_GZIP) << "s_error";
         return 0;

@@ -105,4 +105,41 @@ TEST(ParserGzipTest, ChunkedDecompression)
     EXPECT_EQ(receiver.bytes_received, 1024u * 1024u);
 }
 
+TEST(ParserGzipTest, SecondMemberInSeparatePushIsDecoded)
+{
+    const auto first = compressGzip("safe");
+    const auto second = compressGzip("D2MARKER");
+    CountingGzipReceiver receiver;
+    ParserGzip parser(receiver, 0);
+    EXPECT_EQ(parser.push(first.data(), first.size()), first.size());
+    EXPECT_EQ(parser.push(second.data(), second.size()), second.size());
+    parser.finish();
+    EXPECT_FALSE(parser.error());
+    EXPECT_EQ(receiver.bytes_received, 12u);
+}
+
+TEST(ParserGzipTest, GarbageAfterCompleteMemberIsAnError)
+{
+    const auto first = compressGzip("safe");
+    CountingGzipReceiver receiver;
+    ParserGzip parser(receiver, 0);
+    parser.push(first.data(), first.size());
+    const std::string garbage = "not a gzip member at all";
+    parser.push(garbage.data(), garbage.size());
+    parser.finish();
+    EXPECT_TRUE(parser.error());
+}
+
+TEST(ParserGzipTest, TruncatedSecondMemberIsAnError)
+{
+    const auto first = compressGzip("safe");
+    const auto second = compressGzip("D2MARKER");
+    CountingGzipReceiver receiver;
+    ParserGzip parser(receiver, 0);
+    parser.push(first.data(), first.size());
+    parser.push(second.data(), second.size() - 4);
+    parser.finish();
+    EXPECT_TRUE(parser.error());
+}
+
 }
