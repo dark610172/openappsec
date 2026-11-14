@@ -29,7 +29,8 @@ public:
         I_MainLoop *_mainloop,
         const I_RestInvoke *_invoke,
         bool is_external = false,
-        std::chrono::milliseconds request_timeout = std::chrono::milliseconds(10000)
+        std::chrono::milliseconds inactivity_timeout = std::chrono::milliseconds(10000),
+        std::chrono::milliseconds total_timeout = std::chrono::milliseconds(600000)
     );
     ~RestConn();
 
@@ -38,16 +39,21 @@ public:
 private:
     void stop() const;
     using Deadline = std::chrono::steady_clock::time_point;
-    int readData(char *data, size_t size, Deadline deadline) const;
-    bool readLine(std::string &line, size_t &header_bytes, Deadline deadline) const;
-    bool readSize(std::string &body, size_t len, Deadline deadline) const;
+    struct ReadTimeouts {
+        Deadline inactivity;
+        Deadline total;
+    };
+    int readData(char *data, size_t size, ReadTimeouts &timeouts) const;
+    bool readLine(std::string &line, size_t &header_bytes, ReadTimeouts &timeouts) const;
+    bool readSize(std::string &body, size_t len, ReadTimeouts &timeouts) const;
     void sendResponse(const std::string &status, const std::string &body, bool add_newline = true) const;
 
     int fd;
     I_MainLoop *mainloop;
     const I_RestInvoke *invoke;
     bool is_external_ip = false;
-    std::chrono::milliseconds request_timeout;
+    std::chrono::milliseconds inactivity_timeout;
+    std::chrono::milliseconds total_timeout;
 };
 
 #endif // __REST_CONN_H__

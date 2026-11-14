@@ -10,10 +10,14 @@
 #include "mock/mock_mainloop.h"
 #include "mock/mock_time_get.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 using namespace std;
 using namespace testing;
@@ -92,7 +96,9 @@ checkStalledRequest(const string &request, bool has_request_line, bool keep_send
     SocketPair healthy;
     stalled.sendRequest(request);
     healthy.sendRequest("GET /ok HTTP/1.1\r\n\r\n");
-    RestConn slow_conn(stalled.server(), mainloop, &invoke, false, chrono::milliseconds(40));
+    RestConn slow_conn(
+        stalled.server(), mainloop, &invoke, false, chrono::milliseconds(40), chrono::milliseconds(120)
+    );
     RestConn good_conn(healthy.server(), mainloop, &invoke);
     auto slow_id = mainloop->addFileRoutine(
         I_MainLoop::RoutineType::Offline,
@@ -114,7 +120,9 @@ checkStalledRequest(const string &request, bool has_request_line, bool keep_send
     unsigned int heartbeats_before_close = 0;
     unsigned int heartbeats_after_close = 0;
     bool closed = false;
+    unsigned int progress_bytes = 0;
     const auto start = chrono::steady_clock::now();
+    auto next_input = start;
     mainloop->addOneTimeRoutine(
         I_MainLoop::RoutineType::Offline,
         [&]() {
@@ -127,13 +135,20 @@ checkStalledRequest(const string &request, bool has_request_line, bool keep_send
                         closed = true;
                         stalled.serverClosed();
                         heartbeats_before_close = heartbeats - 1;
-                        EXPECT_GE(chrono::steady_clock::now() - start, chrono::milliseconds(40));
+                        EXPECT_GE(
+                            chrono::steady_clock::now() - start,
+                            chrono::milliseconds(keep_sending ? 120 : 40)
+                        );
                     }
                     if (++heartbeats_after_close == 3) break;
                 } else {
                     EXPECT_EQ(received, -1);
                     EXPECT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
-                    if (keep_sending) stalled.sendRequest("x");
+                    if (keep_sending && chrono::steady_clock::now() >= next_input) {
+                        stalled.sendRequest("x");
+                        ++progress_bytes;
+                        next_input = chrono::steady_clock::now() + chrono::milliseconds(5);
+                    }
                 }
                 mainloop->yield(true);
             }
@@ -148,6 +163,7 @@ checkStalledRequest(const string &request, bool has_request_line, bool keep_send
     EXPECT_EQ(heartbeats_after_close, 3u);
     EXPECT_FALSE(mainloop->doesRoutineExist(slow_id));
     EXPECT_TRUE(healthy_completed);
+    if (keep_sending) EXPECT_GT(progress_bytes, 3u);
     EXPECT_EQ(
         healthy.response(),
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\nalive"
@@ -218,6 +234,67 @@ TEST(RestConnDeadline, continued_input_does_not_reset_the_total_deadline)
         ExitedWithCode(0),
         ""
     );
+}
+
+TEST(RestConnDeadline, progressing_body_still_expires_at_total_limit)
+{
+    ASSERT_EXIT(
+        {
+            alarm(5);
+            checkStalledRequest("POST /slow HTTP/1.1\r\nContent-Length: 1000\r\n\r\na", true, true);
+            _exit(Test::HasFailure() ? 1 : 0);
+        },
+        ExitedWithCode(0),
+        ""
+    );
+}
+
+TEST_F(RestConnInputTest, slow_progress_resets_inactivity_across_headers_and_body)
+{
+    const vector<string> fragments = {
+        "POST /ec", "ho HTTP/1.1\r\nContent-Len", "gth: 5\r\n", "X-Test: value\r\n", "\r\nh",
+        "e", "l", "l", "o"
+    };
+    size_t next = 1;
+    sockets.sendRequest(fragments[0]);
+    EXPECT_CALL(mainloop, yield(true)).Times(fragments.size() - 1).WillRepeatedly(Invoke([&]() {
+        this_thread::sleep_for(chrono::milliseconds(25));
+        ASSERT_LT(next, fragments.size());
+        sockets.sendRequest(fragments[next++]);
+    }));
+    EXPECT_CALL(invoke, shouldCaptureHeaders("echo")).WillOnce(Return(true));
+    EXPECT_CALL(invoke, isPostCall("echo")).WillOnce(Return(true));
+    EXPECT_CALL(invoke, invokePost("echo", "hello")).WillOnce(Return(Maybe<string>(string("hello"))));
+    const auto start = chrono::steady_clock::now();
+    RestConn(
+        sockets.server(), &mainloop, &invoke, false, chrono::milliseconds(100), chrono::milliseconds(2000)
+    ).parseConn();
+    EXPECT_GE(chrono::steady_clock::now() - start, chrono::milliseconds(100));
+    EXPECT_EQ(next, fragments.size());
+    EXPECT_THAT(sockets.response(), HasSubstr("200 OK"));
+}
+
+TEST_F(RestConnInputTest, silence_after_progress_expires_from_last_received_byte)
+{
+    sockets.sendRequest("POST /echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nh");
+    EXPECT_CALL(invoke, shouldCaptureHeaders("echo")).WillOnce(Return(false));
+    bool progressed = false;
+    chrono::steady_clock::time_point last_progress;
+    EXPECT_CALL(mainloop, yield(true)).WillRepeatedly(Invoke([&]() {
+        if (progressed) return;
+        this_thread::sleep_for(chrono::milliseconds(25));
+        sockets.sendRequest("e");
+        last_progress = chrono::steady_clock::now();
+        progressed = true;
+    }));
+    EXPECT_CALL(mainloop, stop()).WillOnce(Invoke([&]() {
+        EXPECT_TRUE(progressed);
+        EXPECT_GE(chrono::steady_clock::now() - last_progress, chrono::milliseconds(100));
+        sockets.serverClosed();
+    }));
+    RestConn(
+        sockets.server(), &mainloop, &invoke, false, chrono::milliseconds(100), chrono::milliseconds(2000)
+    ).parseConn();
 }
 
 TEST_F(RestConnInputTest, complete_post_preserves_body_and_response)
@@ -306,7 +383,10 @@ TEST_F(RestConnInputTest, aggregate_header_size_is_limited)
 
 TEST_F(RestConnInputTest, body_limit_rejects_oversized_and_overflowing_lengths)
 {
-    const string lengths[] = {"16777217", "184467440737095516160", "-1"};
+    const string lengths[] = {
+        to_string(static_cast<unsigned long long>(INT_MAX) + 1),
+        "184467440737095516160", "-1", "-2147483649", "no-number", ""
+    };
     for (bool capture_headers : {false, true}) {
         for (const string &length : lengths) {
             SocketPair connection;
@@ -314,6 +394,64 @@ TEST_F(RestConnInputTest, body_limit_rejects_oversized_and_overflowing_lengths)
             EXPECT_CALL(invoke, shouldCaptureHeaders("call")).WillOnce(Return(capture_headers));
             EXPECT_CALL(mainloop, stop()).WillOnce(Invoke([&]() { connection.serverClosed(); }));
             RestConn(connection.server(), &mainloop, &invoke).parseConn();
+        }
+    }
+}
+
+TEST_F(RestConnInputTest, compatibility_lengths_are_accepted_before_reading_the_body)
+{
+    const string lengths[] = {"16777217", to_string(INT_MAX)};
+    for (bool capture_headers : {false, true}) {
+        for (const string &length : lengths) {
+            SocketPair connection;
+            connection.sendRequest("POST /call HTTP/1.1\r\nContent-Length: " + length + "\r\n\r\n");
+            EXPECT_CALL(invoke, shouldCaptureHeaders("call")).WillOnce(Return(capture_headers));
+            // A yield proves that the header was accepted and the body reader is waiting for data.
+            EXPECT_CALL(mainloop, yield(true)).WillOnce(Invoke([&]() {
+                EXPECT_EQ(shutdown(connection.client(), SHUT_WR), 0);
+            }));
+            EXPECT_CALL(mainloop, stop()).WillOnce(Invoke([&]() { connection.serverClosed(); }));
+            RestConn(connection.server(), &mainloop, &invoke).parseConn();
+        }
+    }
+}
+
+TEST_F(RestConnInputTest, body_larger_than_sixteen_mib_reaches_the_handler)
+{
+    const size_t body_size = 16 * 1024 * 1024 + 1;
+    sockets.sendRequest("POST /large HTTP/1.1\r\nContent-Length: " + to_string(body_size) + "\r\n\r\n");
+    size_t sent = 0;
+    EXPECT_CALL(mainloop, yield(true)).WillRepeatedly(Invoke([&]() {
+        ASSERT_LT(sent, body_size);
+        const string chunk(min(static_cast<size_t>(4096), body_size - sent), 'x');
+        sockets.sendRequest(chunk);
+        sent += chunk.size();
+    }));
+    EXPECT_CALL(invoke, shouldCaptureHeaders("large")).WillOnce(Return(false));
+    EXPECT_CALL(invoke, isPostCall("large")).WillOnce(Return(true));
+    EXPECT_CALL(invoke, invokePost("large", _)).WillOnce(Invoke(
+        [&](const string &, const string &body) -> Maybe<string> {
+            EXPECT_EQ(body.size(), body_size);
+            EXPECT_EQ(body, string(body_size, 'x'));
+            return string("ok");
+        }
+    ));
+    RestConn(sockets.server(), &mainloop, &invoke).parseConn();
+    EXPECT_EQ(sent, body_size);
+    EXPECT_THAT(sockets.response(), HasSubstr("200 OK"));
+}
+
+TEST_F(RestConnInputTest, original_stoi_numeric_prefixes_remain_compatible)
+{
+    for (bool capture_headers : {false, true}) {
+        for (const char *length : {"+5", "0005", "5suffix"}) {
+            SocketPair connection;
+            connection.sendRequest(string("POST /echo HTTP/1.1\r\nContent-Length: ") + length + "\r\n\r\nhello");
+            EXPECT_CALL(invoke, shouldCaptureHeaders("echo")).WillOnce(Return(capture_headers));
+            EXPECT_CALL(invoke, isPostCall("echo")).WillOnce(Return(true));
+            EXPECT_CALL(invoke, invokePost("echo", "hello")).WillOnce(Return(Maybe<string>(string("ok"))));
+            RestConn(connection.server(), &mainloop, &invoke).parseConn();
+            EXPECT_THAT(connection.response(), HasSubstr("200 OK"));
         }
     }
 }

@@ -3,10 +3,14 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <fcntl.h>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "../shared_ring_queue.h"
+#include "../shmem_ipc_permissions.h"
 #include "debug.h"
 #include "cptest.h"
 #include "time_proxy.h"
@@ -277,6 +281,10 @@ class SharedIPCPermissionsTest : public Test
 public:
     SharedIPCPermissionsTest()
     {
+        const char *value = getenv("CP_NANO_IPC_COMPAT_PERMISSIONS");
+        had_compat_env = value != nullptr;
+        if (had_compat_env) saved_compat_env = value;
+        EXPECT_EQ(unsetenv("CP_NANO_IPC_COMPAT_PERMISSIONS"), 0);
         Debug::setNewDefaultStdout(&capture_debug);
         Debug::setUnitTestFlag(D_SHMEM, Debug::DebugLevel::TRACE);
     }
@@ -285,6 +293,11 @@ public:
     {
         if (owner != nullptr) destroyIpc(owner, 1);
         Debug::setNewDefaultStdout(&cout);
+        if (had_compat_env) {
+            EXPECT_EQ(setenv("CP_NANO_IPC_COMPAT_PERMISSIONS", saved_compat_env.c_str(), 1), 0);
+        } else {
+            EXPECT_EQ(unsetenv("CP_NANO_IPC_COMPAT_PERMISSIONS"), 0);
+        }
     }
 
     void expectPermissions(uid_t expected_uid, gid_t expected_gid, mode_t expected_mode)
@@ -305,18 +318,75 @@ public:
     const string name = "d13_ut_" + to_string(getpid());
     SharedMemoryIPC *owner = nullptr;
     stringstream capture_debug;
+    bool had_compat_env = false;
+    string saved_compat_env;
 };
 
 TEST_F(SharedIPCPermissionsTest, attachment_ownership_and_mode)
 {
     // Exercise the deployment's root -> kong ownership change; adapt for non-root test runners.
-    const bool privileged = geteuid() == 0;
-    const uid_t attachment_uid = privileged ? 1001 : geteuid();
-    const gid_t attachment_gid = privileged ? 1001 : getegid();
+    bool can_restrict = geteuid() == 0;
+    for (const char *path : {"/proc/self/uid_map", "/proc/self/gid_map"}) {
+        ifstream file(path);
+        const string mapping((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+        can_restrict = can_restrict && shmemIpcIsIdentityMap(mapping.c_str());
+    }
+    const uid_t attachment_uid = geteuid() == 0 ? 1001 : geteuid();
+    const gid_t attachment_gid = geteuid() == 0 ? 1001 : getegid();
     owner = initIpc(name.c_str(), attachment_uid, attachment_gid, 1, num_of_shmem_elem, debugFunc);
     ASSERT_NE(owner, nullptr);
-    expectPermissions(attachment_uid, attachment_gid, privileged ? 0660 : 0666);
-    if (!privileged) EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+    expectPermissions(
+        can_restrict ? attachment_uid : geteuid(),
+        can_restrict ? attachment_gid : getegid(),
+        can_restrict ? 0660 : 0666
+    );
+    if (!can_restrict) EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+}
+
+TEST(SharedIPCIdentityMap, accepts_full_identity_maps)
+{
+    const char *maps[] = {
+        "0 0 4294967295\n",
+        "         0          0 4294967295\n",
+        "\t0\t0\t4294967296 \n",
+        "0 0 65536\n65536 65536 4294901759\n",
+        "0 0 4294967295"
+    };
+    for (const char *mapping : maps) EXPECT_TRUE(shmemIpcIsIdentityMap(mapping)) << mapping;
+}
+
+TEST(SharedIPCIdentityMap, rejects_shifted_partial_and_malformed_maps)
+{
+    const char *maps[] = {
+        "", " \n", "0 100000 65536\n", "1001 101001 1\n", "0 0 1\n", "1 1 4294967295\n",
+        "0 0 0\n", "0 0 4294967297\n", "0 0 184467440737095516160\n", "0 0 -1\n",
+        "0 0\n4294967295\n", "0 0 4294967295 extra\n", "0 0 4294967295\ninvalid\n",
+        "0 0 100\n101 101 4294967194\n", "0 0 100\n99 99 4294967196\n",
+        "0 0 100\n100 101 4294967195\n", "0 0 4294967295\n4294967296 4294967296 1\n"
+    };
+    EXPECT_FALSE(shmemIpcIsIdentityMap(nullptr));
+    for (const char *mapping : maps) EXPECT_FALSE(shmemIpcIsIdentityMap(mapping)) << mapping;
+}
+
+TEST_F(SharedIPCPermissionsTest, compat_override_requires_exactly_one)
+{
+    EXPECT_FALSE(shmemIpcCompatPermissionsEnabled());
+    for (const char *value : {"", "0", "true", "01", "1 ", " 1", "2"}) {
+        ASSERT_EQ(setenv("CP_NANO_IPC_COMPAT_PERMISSIONS", value, 1), 0);
+        EXPECT_FALSE(shmemIpcCompatPermissionsEnabled()) << value;
+    }
+    ASSERT_EQ(setenv("CP_NANO_IPC_COMPAT_PERMISSIONS", "1", 1), 0);
+    EXPECT_TRUE(shmemIpcCompatPermissionsEnabled());
+}
+
+TEST_F(SharedIPCPermissionsTest, compat_override_keeps_legacy_ownership_and_mode)
+{
+    ASSERT_EQ(setenv("CP_NANO_IPC_COMPAT_PERMISSIONS", "1", 1), 0);
+    owner = initIpc(name.c_str(), 1001, 1001, 1, num_of_shmem_elem, debugFunc);
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(geteuid(), getegid(), 0666);
+    EXPECT_THAT(capture_debug.str(), HasSubstr("CP_NANO_IPC_COMPAT_PERMISSIONS=1"));
+    EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
 }
 
 TEST_F(SharedIPCPermissionsTest, unusable_attachment_ids_keep_legacy_access)

@@ -16,8 +16,10 @@
 #include <unistd.h>
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <poll.h>
 #include <sstream>
+#include <stdexcept>
 #include <sys/socket.h>
 
 #include "debug.h"
@@ -28,21 +30,23 @@ USE_DEBUG_FLAG(D_API);
 
 // The header budget includes the request line and all header delimiters.
 static const size_t max_header_size = 64 * 1024;
-static const size_t max_body_size = 16 * 1024 * 1024;
+static const size_t max_body_size = INT_MAX;
 
 RestConn::RestConn(
     int _fd,
     I_MainLoop *_mainloop,
     const I_RestInvoke *_invoke,
     bool is_external,
-    chrono::milliseconds _request_timeout
+    chrono::milliseconds _inactivity_timeout,
+    chrono::milliseconds _total_timeout
 )
         :
         fd(_fd),
         mainloop(_mainloop),
         invoke(_invoke),
         is_external_ip(is_external),
-        request_timeout(_request_timeout)
+        inactivity_timeout(_inactivity_timeout),
+        total_timeout(_total_timeout)
 {}
 
 RestConn::~RestConn()
@@ -64,25 +68,27 @@ compareStringCaseInsensitive(const string &s1, const string &s2)
 static bool
 parseContentLength(const string &data, size_t &len)
 {
-    size_t value = 0;
-    if (data.empty()) return false;
-    for (char ch : data) {
-        if (ch < '0' || ch > '9') return false;
-        size_t digit = ch - '0';
-        if (value > (max_body_size - digit) / 10) return false;
-        value = value * 10 + digit;
+    // Preserve the original stoi() range and accepted numeric prefixes.
+    try {
+        int value = stoi(data);
+        if (value < 0) return false;
+        len = static_cast<size_t>(value);
+        return true;
+    } catch (const invalid_argument &) {
+        return false;
+    } catch (const out_of_range &) {
+        return false;
     }
-    len = value;
-    return true;
 }
 
 void
 RestConn::parseConn() const
 {
-    const auto deadline = chrono::steady_clock::now() + request_timeout;
+    const auto start = chrono::steady_clock::now();
+    ReadTimeouts timeouts = {start + inactivity_timeout, start + total_timeout};
     size_t header_bytes = 0;
     string line;
-    if (!readLine(line, header_bytes, deadline)) {
+    if (!readLine(line, header_bytes, timeouts)) {
         stop();
         return;
     }
@@ -108,7 +114,7 @@ RestConn::parseConn() const
     bool should_capture_headers = invoke->shouldCaptureHeaders(identifier);
 
     while (true) {
-        if (!readLine(line, header_bytes, deadline)) {
+        if (!readLine(line, header_bytes, timeouts)) {
             stop();
             return;
         }
@@ -179,7 +185,7 @@ RestConn::parseConn() const
     }
 
     string content;
-    if (!readSize(content, len, deadline)) {
+    if (!readSize(content, len, timeouts)) {
         stop();
         return;
     }
@@ -217,9 +223,9 @@ RestConn::stop() const
 }
 
 int
-RestConn::readData(char *data, size_t size, Deadline deadline) const
+RestConn::readData(char *data, size_t size, ReadTimeouts &timeouts) const
 {
-    while (chrono::steady_clock::now() < deadline) {
+    while (chrono::steady_clock::now() < min(timeouts.inactivity, timeouts.total)) {
         struct pollfd socket_poll = {fd, POLLIN, 0};
         int ready = poll(&socket_poll, 1, 0);
         if (ready < 0 && errno != EINTR) return -1;
@@ -227,22 +233,23 @@ RestConn::readData(char *data, size_t size, Deadline deadline) const
             if (!(socket_poll.revents & POLLIN)) return -1;
             // Even after poll(), a readiness race must never block this thread.
             int received = recv(fd, data, size, MSG_DONTWAIT);
+            if (received > 0) timeouts.inactivity = chrono::steady_clock::now() + inactivity_timeout;
             if (received >= 0) return received;
             if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) return -1;
         }
         mainloop->yield(true);
     }
-    dbgWarning(D_API) << "REST request receive deadline exceeded on socket " << fd;
+    dbgWarning(D_API) << "REST request receive timeout on socket " << fd;
     return -1;
 }
 
 bool
-RestConn::readLine(string &line, size_t &header_bytes, Deadline deadline) const
+RestConn::readLine(string &line, size_t &header_bytes, ReadTimeouts &timeouts) const
 {
     line.clear();
     while (header_bytes < max_header_size) {
         char ch;
-        if (readData(&ch, sizeof(ch), deadline) != sizeof(ch)) return false;
+        if (readData(&ch, sizeof(ch), timeouts) != sizeof(ch)) return false;
         ++header_bytes;
         line += ch;
         if (ch == '\n') return true;
@@ -252,13 +259,13 @@ RestConn::readLine(string &line, size_t &header_bytes, Deadline deadline) const
 }
 
 bool
-RestConn::readSize(string &body, size_t len, Deadline deadline) const
+RestConn::readSize(string &body, size_t len, ReadTimeouts &timeouts) const
 {
     body.clear();
     if (len > max_body_size) return false;
     while (body.size() < len) {
         char buffer[4096];
-        int received = readData(buffer, min(sizeof(buffer), len - body.size()), deadline);
+        int received = readData(buffer, min(sizeof(buffer), len - body.size()), timeouts);
         if (received <= 0) return false;
         body.append(buffer, received);
     }

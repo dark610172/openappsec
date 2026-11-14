@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "shmem_ipc.h"
+#include "shmem_ipc_permissions.h"
 
 #include <stdlib.h>
 #include <sys/file.h>
@@ -63,6 +64,64 @@ isTowardsOwner(int is_owner, int is_tx)
 }
 
 static int
+parseMapNumber(const char **text, uint64_t *value)
+{
+    const uint64_t id_range = UINT64_C(4294967296);
+    while (**text == ' ' || **text == '\t') ++*text;
+    if (**text < '0' || **text > '9') return 0;
+    *value = 0;
+    do {
+        unsigned int digit = *(*text)++ - '0';
+        if (*value > (id_range - digit) / 10) return 0;
+        *value = *value * 10 + digit;
+    } while (**text >= '0' && **text <= '9');
+    return 1;
+}
+
+int
+shmemIpcIsIdentityMap(const char *text)
+{
+    uint64_t next_id = 0;
+    if (text == NULL) return 0;
+    while (*text != '\0') {
+        uint64_t inside, outside, count;
+        while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') ++text;
+        if (*text == '\0') break;
+        if (!parseMapNumber(&text, &inside) || !parseMapNumber(&text, &outside) ||
+            !parseMapNumber(&text, &count)
+        ) return 0;
+        if (inside != outside || inside != next_id || count == 0 ||
+            inside >= UINT64_C(4294967296) || count > UINT64_C(4294967296) - inside
+        ) return 0;
+        while (*text == ' ' || *text == '\t' || *text == '\r') ++text;
+        if (*text != '\0' && *text != '\n') return 0;
+        next_id = inside + count;
+    }
+    // Linux's initial namespace excludes (uid_t)-1 but maps every usable ID.
+    return next_id >= UINT32_MAX;
+}
+
+int
+shmemIpcCompatPermissionsEnabled(void)
+{
+    const char *value = getenv("CP_NANO_IPC_COMPAT_PERMISSIONS");
+    return value != NULL && strcmp(value, "1") == 0;
+}
+
+static int
+hasIdentityMap(const char *path)
+{
+    char text[16384];
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return 0;
+    size_t size = fread(text, 1, sizeof(text) - 1, file);
+    int complete = fgetc(file) == EOF && !ferror(file);
+    fclose(file);
+    text[size] = '\0';
+    return complete && shmemIpcIsIdentityMap(text);
+}
+
+static int
 setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id)
 {
     int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
@@ -72,9 +131,21 @@ setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id)
     }
 
     mode_t mode = 0666;
-    // Only a privileged owner with explicit attachment IDs can safely restrict access.
+    // Only a privileged owner with identity maps and explicit attachment IDs can restrict access.
     // In particular, (uid_t)-1 and (gid_t)-1 mean 'leave unchanged' to fchown.
-    if (geteuid() != 0 || user_id == 0 || group_id == 0 ||
+    if (shmemIpcCompatPermissionsEnabled()) {
+        writeDebug(
+            WarningLevel,
+            "CP_NANO_IPC_COMPAT_PERMISSIONS=1 for IPC queue '%s'; keeping mode 0666",
+            path
+        );
+    } else if (!hasIdentityMap("/proc/self/uid_map") || !hasIdentityMap("/proc/self/gid_map")) {
+        writeDebug(
+            WarningLevel,
+            "IPC owner UID/GID maps are not full identity maps or cannot be read for '%s'; keeping mode 0666",
+            path
+        );
+    } else if (geteuid() != 0 || user_id == 0 || group_id == 0 ||
         (uid_t)user_id == (uid_t)-1 || (gid_t)group_id == (gid_t)-1 ||
         (uint32_t)(uid_t)user_id != user_id || (uint32_t)(gid_t)group_id != group_id
     ) {
