@@ -14,6 +14,9 @@
 #include "rest_conn.h"
 
 #include <unistd.h>
+#include <algorithm>
+#include <cerrno>
+#include <poll.h>
 #include <sstream>
 #include <sys/socket.h>
 
@@ -23,12 +26,23 @@ using namespace std;
 
 USE_DEBUG_FLAG(D_API);
 
-RestConn::RestConn(int _fd, I_MainLoop *_mainloop, const I_RestInvoke *_invoke, bool is_external)
+// The header budget includes the request line and all header delimiters.
+static const size_t max_header_size = 64 * 1024;
+static const size_t max_body_size = 16 * 1024 * 1024;
+
+RestConn::RestConn(
+    int _fd,
+    I_MainLoop *_mainloop,
+    const I_RestInvoke *_invoke,
+    bool is_external,
+    chrono::milliseconds _request_timeout
+)
         :
         fd(_fd),
         mainloop(_mainloop),
         invoke(_invoke),
-        is_external_ip(is_external)
+        is_external_ip(is_external),
+        request_timeout(_request_timeout)
 {}
 
 RestConn::~RestConn()
@@ -47,17 +61,32 @@ compareStringCaseInsensitive(const string &s1, const string &s2)
     return true;
 }
 
+static bool
+parseContentLength(const string &data, size_t &len)
+{
+    size_t value = 0;
+    if (data.empty()) return false;
+    for (char ch : data) {
+        if (ch < '0' || ch > '9') return false;
+        size_t digit = ch - '0';
+        if (value > (max_body_size - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    len = value;
+    return true;
+}
+
 void
 RestConn::parseConn() const
 {
-    char ch;
-
-    if (recv(fd, &ch, sizeof(char), MSG_PEEK) != sizeof(char)) {
-        dbgDebug(D_API) << "Socket " << fd << " ended";
+    const auto deadline = chrono::steady_clock::now() + request_timeout;
+    size_t header_bytes = 0;
+    string line;
+    if (!readLine(line, header_bytes, deadline)) {
         stop();
+        return;
     }
 
-    string line = readLine();
     stringstream os;
     os.str(line);
     string method;
@@ -74,12 +103,15 @@ RestConn::parseConn() const
     string identifier = uri.substr(uri.find_first_of('/') + 1);
     dbgDebug(D_API) << "Call identifier: " << identifier;
 
-    uint len = 0;
+    size_t len = 0;
     map<string, string> headers;
     bool should_capture_headers = invoke->shouldCaptureHeaders(identifier);
 
     while (true) {
-        line = readLine();
+        if (!readLine(line, header_bytes, deadline)) {
+            stop();
+            return;
+        }
         if (line.size() < 3) break;
 
         if (should_capture_headers) {
@@ -107,19 +139,20 @@ RestConn::parseConn() const
             }
 
             if (compareStringCaseInsensitive(head, "Content-Length")) {
-                try {
-                    len = stoi(data, nullptr);
-                } catch (...) {
+                if (!parseContentLength(data, len)) {
+                    stop();
+                    return;
                 }
             }
         } else {
+            os.clear();
             os.str(line);
             string head, data;
             os >> head >> data;
             if (compareStringCaseInsensitive(head, "Content-Length:")) {
-                try {
-                    len = stoi(data, nullptr);
-                } catch (...) {
+                if (!parseContentLength(data, len)) {
+                    stop();
+                    return;
                 }
             }
         }
@@ -131,6 +164,7 @@ RestConn::parseConn() const
         dbgWarning(D_API) << "No length was found - could be chunked, but we still do not support that";
         sendResponse("411 Length Required", "");
         stop();
+        return;
     }
 
     if (method=="GET" && invoke->isGetCall(identifier)) {
@@ -141,10 +175,16 @@ RestConn::parseConn() const
         dbgWarning(D_API) << "External IP tried to POST";
         sendResponse("500 Internal Server Error", "", false);
         stop();
+        return;
     }
 
+    string content;
+    if (!readSize(content, len, deadline)) {
+        stop();
+        return;
+    }
     stringstream body;
-    body.str(readSize(len));
+    body.str(content);
 
     dbgTrace(D_API) << "Message content: " << body.str();
 
@@ -176,37 +216,53 @@ RestConn::stop() const
     mainloop->stop();
 }
 
-string
-RestConn::readLine() const
+int
+RestConn::readData(char *data, size_t size, Deadline deadline) const
 {
-    string res;
-    char ch = 0;
-    while (ch != '\n') {
-        if (read(fd, &ch, sizeof(char)) != sizeof(char)) {
-            dbgWarning(D_API) << "Failed to read from socket " << fd;
-            sendResponse("598 Network read timeout error", "");
-            stop();
+    while (chrono::steady_clock::now() < deadline) {
+        struct pollfd socket_poll = {fd, POLLIN, 0};
+        int ready = poll(&socket_poll, 1, 0);
+        if (ready < 0 && errno != EINTR) return -1;
+        if (ready > 0) {
+            if (!(socket_poll.revents & POLLIN)) return -1;
+            // Even after poll(), a readiness race must never block this thread.
+            int received = recv(fd, data, size, MSG_DONTWAIT);
+            if (received >= 0) return received;
+            if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) return -1;
         }
-        res += ch;
+        mainloop->yield(true);
     }
-
-    return res;
+    dbgWarning(D_API) << "REST request receive deadline exceeded on socket " << fd;
+    return -1;
 }
 
-string
-RestConn::readSize(int len) const
+bool
+RestConn::readLine(string &line, size_t &header_bytes, Deadline deadline) const
 {
-    string res;
-    for (int i = 0; i < len; i++) {
+    line.clear();
+    while (header_bytes < max_header_size) {
         char ch;
-        if (read(fd, &ch, sizeof(char)) != sizeof(char)) {
-            dbgWarning(D_API) << "Failed to read from socket " << fd;
-            sendResponse("598 Network read timeout error", "");
-            stop();
-        }
-        res += ch;
+        if (readData(&ch, sizeof(ch), deadline) != sizeof(ch)) return false;
+        ++header_bytes;
+        line += ch;
+        if (ch == '\n') return true;
     }
-    return res;
+    dbgWarning(D_API) << "REST request headers exceed size limit on socket " << fd;
+    return false;
+}
+
+bool
+RestConn::readSize(string &body, size_t len, Deadline deadline) const
+{
+    body.clear();
+    if (len > max_body_size) return false;
+    while (body.size() < len) {
+        char buffer[4096];
+        int received = readData(buffer, min(sizeof(buffer), len - body.size()), deadline);
+        if (received <= 0) return false;
+        body.append(buffer, received);
+    }
+    return true;
 }
 
 void

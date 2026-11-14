@@ -16,27 +16,38 @@
 
 #include <string>
 #include <map>
+#include <chrono>
+#include <cstddef>
 #include "i_mainloop.h"
 #include "i_rest_invoke.h"
 
 class RestConn
 {
 public:
-    RestConn(int _fd, I_MainLoop *_mainloop, const I_RestInvoke *_invoke, bool is_external = false);
+    RestConn(
+        int _fd,
+        I_MainLoop *_mainloop,
+        const I_RestInvoke *_invoke,
+        bool is_external = false,
+        std::chrono::milliseconds request_timeout = std::chrono::milliseconds(10000)
+    );
     ~RestConn();
 
     void parseConn() const;
 
 private:
     void stop() const;
-    std::string readLine() const;
-    std::string readSize(int len) const;
+    using Deadline = std::chrono::steady_clock::time_point;
+    int readData(char *data, size_t size, Deadline deadline) const;
+    bool readLine(std::string &line, size_t &header_bytes, Deadline deadline) const;
+    bool readSize(std::string &body, size_t len, Deadline deadline) const;
     void sendResponse(const std::string &status, const std::string &body, bool add_newline = true) const;
 
     int fd;
     I_MainLoop *mainloop;
     const I_RestInvoke *invoke;
     bool is_external_ip = false;
+    std::chrono::milliseconds request_timeout;
 };
 
 #endif // __REST_CONN_H__
