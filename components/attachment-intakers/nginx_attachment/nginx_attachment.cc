@@ -501,6 +501,11 @@ private:
         << alert
         << "Registration attempt occurred while registration socket is uninitialized";
 
+        ShmemIpcPeerCredentials peer_credentials;
+        // Use the accepted registration socket, never the IDs in its payload.
+        // Keep the invalid result on failure so queue creation uses compatibility permissions.
+        shmemIpcGetPeerCredentials(new_socket, &peer_credentials);
+
 #ifdef FAILURE_TEST
         bool did_fail_on_purpose = false;
 #endif
@@ -512,7 +517,9 @@ private:
 
         string curr_instance_unique_id = inst_awareness->getUniqueID().unpack();
         if (primary_attachment_ipc != nullptr) {
-            if (nginx_worker_user_id != nginx_user_id || nginx_worker_group_id != nginx_group_id) {
+            if (nginx_worker_user_id != peer_credentials.user_id ||
+                nginx_worker_group_id != peer_credentials.group_id
+            ) {
                 destroyIpc(primary_attachment_ipc, 1);
                 primary_attachment_ipc = nullptr;
                 if (secondary_attachment_sync_ipc != nullptr) {
@@ -569,13 +576,14 @@ private:
         }
 
         if (primary_attachment_ipc == nullptr) {
-            primary_attachment_ipc = initIpc(
+            primary_attachment_ipc = initIpcWithPeerCredentials(
                 curr_instance_unique_id.c_str(),
                 nginx_user_id,
                 nginx_group_id,
                 1,
                 num_of_nginx_ipc_elements,
-                IpcDebug
+                IpcDebug,
+                &peer_credentials
             );
 
             if (SHOULD_FAIL(
@@ -591,13 +599,14 @@ private:
         // Initialize secondary sync IPC if not already initialized (only needed in async mode)
         if (attachment_config.isAsyncModeEnabled() && secondary_attachment_sync_ipc == nullptr) {
             string secondary_unique_id = curr_instance_unique_id + "_sync";
-            secondary_attachment_sync_ipc = initIpc(
+            secondary_attachment_sync_ipc = initIpcWithPeerCredentials(
                 secondary_unique_id.c_str(),
                 nginx_user_id,
                 nginx_group_id,
                 1,
                 200,
-                IpcDebug
+                IpcDebug,
+                &peer_credentials
             );
 
             if (secondary_attachment_sync_ipc == nullptr) {
@@ -608,8 +617,8 @@ private:
         }
 
         dbgDebug(D_NGINX_ATTACHMENT) << "Successfully initialized shmem channel";
-        nginx_worker_user_id = nginx_user_id;
-        nginx_worker_group_id = nginx_group_id;
+        nginx_worker_user_id = peer_credentials.user_id;
+        nginx_worker_group_id = peer_credentials.group_id;
         instance_unique_id = curr_instance_unique_id;
 
         if (attachment_sock > 0 && attachment_sock != new_socket) {

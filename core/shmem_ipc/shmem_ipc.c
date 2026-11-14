@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "shmem_ipc.h"
 #include "shmem_ipc_permissions.h"
 
 #include <stdlib.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
@@ -122,7 +127,32 @@ hasIdentityMap(const char *path)
 }
 
 static int
-setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id)
+usablePeerIds(uint32_t user_id, uint32_t group_id)
+{
+    // Linux reports unmapped peer IDs as 65534. -1 is an fchown sentinel.
+    return user_id != 65534 && group_id != 65534 &&
+        (uid_t)user_id != (uid_t)-1 && (gid_t)group_id != (gid_t)-1 &&
+        (uint32_t)(uid_t)user_id == user_id && (uint32_t)(gid_t)group_id == group_id;
+}
+
+int
+shmemIpcGetPeerCredentials(int socket_fd, ShmemIpcPeerCredentials *credentials)
+{
+    struct ucred peer;
+    socklen_t length = sizeof(peer);
+    if (credentials == NULL) return 0;
+    credentials->user_id = UINT32_MAX;
+    credentials->group_id = UINT32_MAX;
+    if (getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) == -1 ||
+        length != sizeof(peer) || !usablePeerIds(peer.uid, peer.gid)
+    ) return 0;
+    credentials->user_id = peer.uid;
+    credentials->group_id = peer.gid;
+    return 1;
+}
+
+static int
+setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id, int has_peer_credentials)
 {
     int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
     if (fd == -1) {
@@ -131,15 +161,22 @@ setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id)
     }
 
     mode_t mode = 0666;
-    // Only a privileged owner with identity maps and explicit attachment IDs can restrict access.
-    // In particular, (uid_t)-1 and (gid_t)-1 mean 'leave unchanged' to fchown.
+    // Peer IDs are already translated into this namespace; message IDs need identity maps.
     if (shmemIpcCompatPermissionsEnabled()) {
         writeDebug(
             WarningLevel,
             "CP_NANO_IPC_COMPAT_PERMISSIONS=1 for IPC queue '%s'; keeping mode 0666",
             path
         );
-    } else if (!hasIdentityMap("/proc/self/uid_map") || !hasIdentityMap("/proc/self/gid_map")) {
+    } else if (has_peer_credentials && !usablePeerIds(user_id, group_id)) {
+        writeDebug(
+            WarningLevel,
+            "SO_PEERCRED unavailable or peer UID/GID unmapped/invalid for IPC queue '%s'; keeping mode 0666",
+            path
+        );
+    } else if (!has_peer_credentials &&
+        (!hasIdentityMap("/proc/self/uid_map") || !hasIdentityMap("/proc/self/gid_map"))
+    ) {
         writeDebug(
             WarningLevel,
             "IPC owner UID/GID maps are not full identity maps or cannot be read for '%s'; keeping mode 0666",
@@ -179,7 +216,8 @@ createOneWayIPCQueue(
     const uint32_t group_id,
     int is_tx_queue,
     int is_owner,
-    uint16_t num_of_queue_elem
+    uint16_t num_of_queue_elem,
+    int has_peer_credentials
 )
 {
     SharedRingQueue *ring_queue = NULL;
@@ -211,7 +249,7 @@ createOneWayIPCQueue(
         return NULL;
     }
 
-    if (is_owner && setQueuePermissions(shmem_path, user_id, group_id) == -1) {
+    if (is_owner && setQueuePermissions(shmem_path, user_id, group_id, has_peer_credentials) == -1) {
         destroySharedRingQueue(ring_queue, is_owner, isTowardsOwner(is_owner, is_tx_queue));
         return NULL;
     }
@@ -240,8 +278,28 @@ initIpc(
     uint16_t num_of_queue_elem,
     void (*debug_func)(int is_error, const char *func, const char *file, int line_num, const char *fmt, ...))
 {
+    return initIpcWithPeerCredentials(
+        queue_name, user_id, group_id, is_owner, num_of_queue_elem, debug_func, NULL
+    );
+}
+
+SharedMemoryIPC *
+initIpcWithPeerCredentials(
+    const char queue_name[32],
+    uint32_t user_id,
+    uint32_t group_id,
+    int is_owner,
+    uint16_t num_of_queue_elem,
+    void (*debug_func)(int is_error, const char *func, const char *file, int line_num, const char *fmt, ...),
+    const ShmemIpcPeerCredentials *peer_credentials)
+{
     SharedMemoryIPC *ipc = NULL;
     debug_int = debug_func;
+    int has_peer_credentials = peer_credentials != NULL;
+    if (has_peer_credentials) {
+        user_id = peer_credentials->user_id;
+        group_id = peer_credentials->group_id;
+    }
 
     writeDebug(
         TraceLevel,
@@ -264,7 +322,9 @@ initIpc(
     ipc->rx_queue = NULL;
     ipc->tx_queue = NULL;
 
-    ipc->rx_queue = createOneWayIPCQueue(queue_name, user_id, group_id, 0, is_owner, num_of_queue_elem);
+    ipc->rx_queue = createOneWayIPCQueue(
+        queue_name, user_id, group_id, 0, is_owner, num_of_queue_elem, has_peer_credentials
+    );
     if (ipc->rx_queue == NULL) {
         writeDebug(
             WarningLevel,
@@ -282,7 +342,9 @@ initIpc(
         return NULL;
     }
 
-    ipc->tx_queue = createOneWayIPCQueue(queue_name, user_id, group_id, 1, is_owner, num_of_queue_elem);
+    ipc->tx_queue = createOneWayIPCQueue(
+        queue_name, user_id, group_id, 1, is_owner, num_of_queue_elem, has_peer_credentials
+    );
     if (ipc->tx_queue == NULL) {
         writeDebug(
             WarningLevel,

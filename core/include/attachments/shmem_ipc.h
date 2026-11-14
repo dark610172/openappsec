@@ -26,6 +26,15 @@ extern "C"
 typedef struct SharedMemoryIPC SharedMemoryIPC;
 extern const int corrupted_shmem_error;
 
+// IDs returned by SO_PEERCRED in the queue owner's user namespace.
+typedef struct ShmemIpcPeerCredentials {
+    uint32_t user_id;
+    uint32_t group_id;
+} ShmemIpcPeerCredentials;
+
+// Returns 1 for usable peer IDs. On failure both IDs are set to UINT32_MAX.
+int shmemIpcGetPeerCredentials(int socket_fd, ShmemIpcPeerCredentials *credentials);
+
 SharedMemoryIPC * initIpc(
     const char queue_name[32],
     const uint32_t user_id,
@@ -33,6 +42,19 @@ SharedMemoryIPC * initIpc(
     int is_owner,
     uint16_t num_of_queue_elem,
     void (*debug_func)(int is_error, const char *func, const char *file, int line_num, const char *fmt, ...)
+);
+
+// NULL retains the legacy message-ID path and its identity-map guard.
+// A non-NULL value must come from shmemIpcGetPeerCredentials, even when it fails:
+// unusable peer IDs force mode 0666 and never fall back to message IDs.
+SharedMemoryIPC * initIpcWithPeerCredentials(
+    const char queue_name[32],
+    uint32_t user_id,
+    uint32_t group_id,
+    int is_owner,
+    uint16_t num_of_queue_elem,
+    void (*debug_func)(int is_error, const char *func, const char *file, int line_num, const char *fmt, ...),
+    const ShmemIpcPeerCredentials *peer_credentials
 );
 
 void destroyIpc(SharedMemoryIPC *ipc, int is_owner);

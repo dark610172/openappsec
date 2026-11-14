@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -401,6 +402,131 @@ TEST_F(SharedIPCPermissionsTest, unusable_attachment_ids_keep_legacy_access)
         destroyIpc(owner, 1);
         owner = nullptr;
     }
+}
+
+TEST(SharedIPCPeerCredentials, reads_socketpair_credentials_without_privileges)
+{
+    int sockets[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+    const bool usable_ids = getuid() != 65534 && getgid() != 65534;
+    for (int fd : sockets) {
+        ShmemIpcPeerCredentials peer = {UINT32_MAX, UINT32_MAX};
+        EXPECT_EQ(shmemIpcGetPeerCredentials(fd, &peer), usable_ids ? 1 : 0);
+        EXPECT_EQ(peer.user_id, usable_ids ? static_cast<uint32_t>(getuid()) : UINT32_MAX);
+        EXPECT_EQ(peer.group_id, usable_ids ? static_cast<uint32_t>(getgid()) : UINT32_MAX);
+    }
+    EXPECT_EQ(close(sockets[0]), 0);
+    EXPECT_EQ(close(sockets[1]), 0);
+}
+
+TEST(SharedIPCPeerCredentials, failure_clears_stale_credentials)
+{
+    ShmemIpcPeerCredentials peer = {1001, 1001};
+    EXPECT_FALSE(shmemIpcGetPeerCredentials(-1, &peer));
+    EXPECT_EQ(peer.user_id, UINT32_MAX);
+    EXPECT_EQ(peer.group_id, UINT32_MAX);
+    int fd = open("/dev/null", O_RDONLY);
+    ASSERT_NE(fd, -1);
+    peer = {1001, 1001};
+    EXPECT_FALSE(shmemIpcGetPeerCredentials(fd, &peer));
+    EXPECT_EQ(peer.user_id, UINT32_MAX);
+    EXPECT_EQ(peer.group_id, UINT32_MAX);
+    EXPECT_EQ(close(fd), 0);
+    EXPECT_FALSE(shmemIpcGetPeerCredentials(-1, nullptr));
+}
+
+TEST_F(SharedIPCPermissionsTest, failed_peer_lookup_never_uses_message_ids)
+{
+    ShmemIpcPeerCredentials peer;
+    ASSERT_FALSE(shmemIpcGetPeerCredentials(-1, &peer));
+    owner = initIpcWithPeerCredentials(name.c_str(), 1001, 1001, 1, num_of_shmem_elem, debugFunc, &peer);
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(geteuid(), getegid(), 0666);
+    EXPECT_THAT(capture_debug.str(), HasSubstr("SO_PEERCRED unavailable or peer UID/GID unmapped/invalid"));
+    EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+}
+
+TEST_F(SharedIPCPermissionsTest, overflow_or_invalid_peer_ids_keep_legacy_access)
+{
+    const ShmemIpcPeerCredentials invalid_peers[] = {
+        {65534, 1001}, {1001, 65534}, {UINT32_MAX, 1001}, {1001, UINT32_MAX}
+    };
+    for (const auto &peer : invalid_peers) {
+        capture_debug.str("");
+        owner = initIpcWithPeerCredentials(name.c_str(), 1001, 1001, 1, num_of_shmem_elem, debugFunc, &peer);
+        ASSERT_NE(owner, nullptr);
+        expectPermissions(geteuid(), getegid(), 0666);
+        EXPECT_THAT(capture_debug.str(), HasSubstr("SO_PEERCRED unavailable or peer UID/GID unmapped/invalid"));
+        EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+        destroyIpc(owner, 1);
+        owner = nullptr;
+    }
+}
+
+TEST_F(SharedIPCPermissionsTest, trusted_peer_ids_override_invalid_message_ids)
+{
+    int sockets[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+    ShmemIpcPeerCredentials peer;
+    int have_peer = shmemIpcGetPeerCredentials(sockets[0], &peer);
+    EXPECT_EQ(close(sockets[0]), 0);
+    EXPECT_EQ(close(sockets[1]), 0);
+    const bool usable_ids = getuid() != 65534 && getgid() != 65534;
+    ASSERT_EQ(have_peer, usable_ids ? 1 : 0);
+    owner = initIpcWithPeerCredentials(
+        name.c_str(), UINT32_MAX, UINT32_MAX, 1, num_of_shmem_elem, debugFunc, &peer
+    );
+    ASSERT_NE(owner, nullptr);
+    // The existing conservative policy keeps root IDs and non-root owners in compatibility mode.
+    expectPermissions(geteuid(), getegid(), 0666);
+    EXPECT_THAT(
+        capture_debug.str(),
+        HasSubstr("Queue name: " + name + ", user id: " + to_string(peer.user_id) +
+            ", group id: " + to_string(peer.group_id))
+    );
+    if (usable_ids) {
+        EXPECT_THAT(capture_debug.str(), Not(HasSubstr("SO_PEERCRED unavailable")));
+    } else {
+        EXPECT_THAT(capture_debug.str(), HasSubstr("SO_PEERCRED unavailable"));
+    }
+}
+
+TEST_F(SharedIPCPermissionsTest, trusted_root_peer_ids_override_nonroot_message_ids)
+{
+    // Deterministic even without root: retaining the message IDs would select the wrong owner.
+    const ShmemIpcPeerCredentials peer = {0, 0};
+    owner = initIpcWithPeerCredentials(name.c_str(), 1001, 1001, 1, num_of_shmem_elem, debugFunc, &peer);
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(geteuid(), getegid(), 0666);
+    EXPECT_THAT(capture_debug.str(), HasSubstr("attachment uid=0 gid=0"));
+    EXPECT_THAT(capture_debug.str(), Not(HasSubstr("IPC owner UID/GID maps")));
+}
+
+TEST_F(SharedIPCPermissionsTest, trusted_nonroot_peer_ids_set_queue_ownership)
+{
+    // Ownership transfer needs root and mapped destination IDs; rootless tests above still run.
+    if (geteuid() != 0) return;
+    for (const char *path : {"/proc/self/uid_map", "/proc/self/gid_map"}) {
+        ifstream file(path);
+        const string mapping((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+        if (!shmemIpcIsIdentityMap(mapping.c_str())) return;
+    }
+    const ShmemIpcPeerCredentials peer = {1001, 1002};
+    owner = initIpcWithPeerCredentials(name.c_str(), 2001, 2002, 1, num_of_shmem_elem, debugFunc, &peer);
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(1001, 1002, 0660);
+}
+
+TEST_F(SharedIPCPermissionsTest, compat_override_applies_to_trusted_peer_ids)
+{
+    ASSERT_EQ(setenv("CP_NANO_IPC_COMPAT_PERMISSIONS", "1", 1), 0);
+    const ShmemIpcPeerCredentials peer = {1001, 1001};
+    owner = initIpcWithPeerCredentials(
+        name.c_str(), UINT32_MAX, UINT32_MAX, 1, num_of_shmem_elem, debugFunc, &peer
+    );
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(geteuid(), getegid(), 0666);
+    EXPECT_THAT(capture_debug.str(), HasSubstr("CP_NANO_IPC_COMPAT_PERMISSIONS=1"));
 }
 
 TEST_F(SharedIPCTest, get_main_segment_size)
