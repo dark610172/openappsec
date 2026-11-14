@@ -27,7 +27,7 @@ public:
     KeyStack(const char *name);
     void push(const char *subkey, size_t subkeySize, bool countDepth=true);
     void pop(const char* log, bool countDepth=true);
-    bool empty() const { return m_using_buffer ? m_positions.empty() : m_fallback_key.empty(); }
+    bool empty() const { return m_positions.empty(); }
     void clear();
     void print(std::ostream &os) const;
     size_t depth() const { return m_nameDepth; }
@@ -44,14 +44,14 @@ private:
 
     // Fixed buffer approach for common case (fast path)
     char m_buffer[MAX_KEY_SIZE];
-    std::vector<size_t> m_positions;    // Start positions of each subkey in buffer
+    // Key boundaries are retained across both storage modes.
+    std::vector<size_t> m_positions;    // Start positions of each subkey
     std::vector<size_t> m_lengths;      // Length of each subkey
     size_t m_total_length;
     bool m_using_buffer;
 
     // Fallback to dynamic approach for long keys (slow path)
     std::string m_fallback_key;
-    std::vector<size_t> m_fallback_stack;
 
     // Caching for frequently accessed methods
     mutable std::string m_cached_str;

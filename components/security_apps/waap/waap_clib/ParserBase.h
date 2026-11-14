@@ -35,6 +35,8 @@
 // Interface for receiver classes that accept full key/value pairs
 struct IParserReceiver {
     virtual int onKv(const char *k, size_t k_len, const char *v, size_t v_len, int flags, size_t parser_depth) = 0;
+    // Called after a container is pushed, even when it has no values. Nonzero cancels parsing.
+    virtual int onContainerStart() { return 0; }
 };
 
 struct IParserReceiver2 {
@@ -86,6 +88,7 @@ public:
     virtual int onValue(const char *v, size_t v_len);
     virtual int onKvDone();
     virtual int onKv(const char *k, size_t k_len, const char *v, size_t v_len, int flags, size_t parser_depth);
+    int onContainerStart() override { return m_receiver.onContainerStart(); }
     virtual void clear();
 
     // Helper methods to access accumulated key and value (read-only)

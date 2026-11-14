@@ -132,11 +132,15 @@ ParserJson::cb_start_map()
 {
     dbgTrace(D_WAAP_PARSER_JSON) << "ParserJson::cb_start_map():";
 
+    m_depthStack.push_back(ParserJson::js_map);
+    if (m_receiver.onContainerStart()) {
+        return 0;
+    }
+
     if (m_receiver2) {
         m_receiver2->onStartMap();
     }
 
-    m_depthStack.push_back(ParserJson::js_map);
     return 1;
 }
 
@@ -165,11 +169,15 @@ ParserJson::cb_start_array()
 {
     dbgTrace(D_WAAP_PARSER_JSON) << "ParserJson::cb_start_array():";
 
+    m_depthStack.push_back(ParserJson::js_array);
+    if (m_receiver.onContainerStart()) {
+        return 0;
+    }
+
     if (m_receiver2) {
         m_receiver2->onStartArray();
     }
 
-    m_depthStack.push_back(ParserJson::js_array);
     return 1;
 }
 

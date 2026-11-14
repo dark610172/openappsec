@@ -107,6 +107,12 @@ add_definitions("-Wno-unused-function")
 add_definitions("-Wno-unused-parameter")
 add_definitions("-Wno-deprecated-declarations")
 
+add_unit_test(
+    waap_parsers_ut
+    "waap_parsers_ut.cc;ParserJson.cc;ParserBase.cc;KeyStack.cc"
+    "yajl_s"
+)
+
 #target_link_libraries(waap_clib pm buffers generic_rulebase ip_utilities connkey report_messaging compression_utils -lz)
 
 # Include static headers

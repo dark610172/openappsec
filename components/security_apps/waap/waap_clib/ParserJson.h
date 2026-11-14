@@ -43,7 +43,8 @@ public:
     void finish();
     virtual const std::string &name() const;
     bool error() const;
-    virtual size_t depth() { return (m_key.depth() > 0) ? m_key.depth()-1 : m_key.depth(); }
+    // Count containers, including the root; a scalar member does not add a level.
+    virtual size_t depth() { return m_depthStack.size(); }
 private:
     int cb_null();
     int cb_boolean(int boolean);

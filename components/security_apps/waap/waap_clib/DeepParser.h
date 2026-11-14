@@ -33,6 +33,7 @@ public:
     // This callback receives input key/value pairs, dissects, decodes and deep-scans these, recursively
     // finally, it calls onDetected() on each detected parameter.
     virtual int onKv(const char *k, size_t k_len, const char *v, size_t v_len, int flags, size_t parser_depth);
+    int onContainerStart() override;
 
     void clear();
     void showStats(std::string& buff, const ValueStatsAnalyzer& valueStats);

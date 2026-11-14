@@ -101,6 +101,39 @@ static const SingleRegex temperature_value_re(
     err,
     "temperature_value");
 
+// Keep the transaction maximum even after containers close or a parser is removed.
+// This notification does not scan a value or change the recursive onKv depth.
+int
+DeepParser::onContainerStart()
+{
+    if (isGlobalMaxObjectDepthReached()) {
+        return 1;
+    }
+
+    size_t currDepth = 0;
+    for (const auto &parser : m_parsersDeque) {
+        if (shouldEnforceDepthLimit(parser)) {
+            currDepth += parser->depth();
+        }
+    }
+
+    if (currDepth > getLocalMaxObjectDepth()) {
+        setLocalMaxObjectDepth(currDepth);
+    }
+    if (currDepth > getGlobalMaxObjectDepth()) {
+        setGlobalMaxObjectDepthReached();
+        dbgTrace(D_WAAP_DEEP_PARSER)
+            << "[USER LIMITS] Object depth limit exceeded "
+            << currDepth
+            << "/"
+            << getGlobalMaxObjectDepth()
+            << " no. of parsers: "
+            << m_parsersDeque.size();
+        return 1;
+    }
+    return 0;
+}
+
 // Called when another key/value pair is ready
 int
 DeepParser::onKv(const char *k, size_t k_len, const char *v, size_t v_len, int flags, size_t parser_depth)
@@ -151,36 +184,9 @@ DeepParser::onKv(const char *k, size_t k_len, const char *v, size_t v_len, int f
         return rc;
     }
 
-    size_t currDepth = 0;
-    if (!isGlobalMaxObjectDepthReached()) {
-        for (const auto &parser : m_parsersDeque) {
-            if (shouldEnforceDepthLimit(parser)) {
-                currDepth += parser->depth();
-            }
-        }
-    }
-
-    if (currDepth > getLocalMaxObjectDepth()) {
-        setLocalMaxObjectDepth(currDepth);
-    }
-    if (currDepth > getGlobalMaxObjectDepth()) {
-        setGlobalMaxObjectDepthReached();
-        dbgTrace(D_WAAP_DEEP_PARSER)
-            << "[USER LIMITS] DeepParser::onKv(): Object depth limit exceeded "
-            << currDepth
-            << "/"
-            << getGlobalMaxObjectDepth()
-            << " no. of parsers: "
-            << m_parsersDeque.size();
+    if (onContainerStart()) {
+        m_depth--;
         return DONE_PARSING;
-    } else {
-        dbgTrace(D_WAAP_DEEP_PARSER)
-            << "[USER LIMITS] DeepParser::onKv(): current object depth "
-            << currDepth
-            << "/"
-            << getGlobalMaxObjectDepth()
-            << " no. of parsers: "
-            << m_parsersDeque.size();
     }
 
     // Ignore when both key and value are empty
