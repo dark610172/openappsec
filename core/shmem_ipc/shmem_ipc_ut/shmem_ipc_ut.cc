@@ -2,6 +2,9 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "../shared_ring_queue.h"
 #include "debug.h"
@@ -260,13 +263,73 @@ TEST_F(SharedIPCTest, ensure_right_permissions)
     snprintf(queue_name_tx, sizeof(queue_name_tx) - 1, "/dev/shm/__cp_nano_tx_shared_memory_%s__", shmem_name.c_str());
     snprintf(queue_name_rx, sizeof(queue_name_rx) - 1, "/dev/shm/__cp_nano_rx_shared_memory_%s__", shmem_name.c_str());
     for (char *queue_name : {queue_name_tx, queue_name_rx}) {
-        struct stat info;
-        stat(queue_name, &info);
+        struct stat info = {};
+        ASSERT_EQ(stat(queue_name, &info), 0);
         EXPECT_EQ(info.st_uid, uid);
         EXPECT_EQ(info.st_gid, gid);
-        EXPECT_EQ(info.st_mode & S_IRUSR, static_cast<uint>(S_IRUSR));
-        EXPECT_EQ(info.st_mode & S_IWUSR, static_cast<uint>(S_IWUSR));
-        EXPECT_NE(info.st_mode & S_IXUSR, static_cast<uint>(S_IXUSR));
+        // This fixture passes the owner's IDs: root IDs and unprivileged owners use compatibility mode.
+        EXPECT_EQ(info.st_mode & 0777, static_cast<mode_t>(0666));
+    }
+}
+
+class SharedIPCPermissionsTest : public Test
+{
+public:
+    SharedIPCPermissionsTest()
+    {
+        Debug::setNewDefaultStdout(&capture_debug);
+        Debug::setUnitTestFlag(D_SHMEM, Debug::DebugLevel::TRACE);
+    }
+
+    ~SharedIPCPermissionsTest()
+    {
+        if (owner != nullptr) destroyIpc(owner, 1);
+        Debug::setNewDefaultStdout(&cout);
+    }
+
+    void expectPermissions(uid_t expected_uid, gid_t expected_gid, mode_t expected_mode)
+    {
+        for (const char *direction : {"rx", "tx"}) {
+            const string path = "/dev/shm/__cp_nano_" + string(direction) + "_shared_memory_" + name + "__";
+            struct stat info = {};
+            ASSERT_EQ(stat(path.c_str(), &info), 0);
+            EXPECT_EQ(info.st_uid, expected_uid);
+            EXPECT_EQ(info.st_gid, expected_gid);
+            EXPECT_EQ(info.st_mode & 0777, expected_mode);
+            int fd = open(path.c_str(), O_RDWR);
+            ASSERT_NE(fd, -1);
+            EXPECT_EQ(close(fd), 0);
+        }
+    }
+
+    const string name = "d13_ut_" + to_string(getpid());
+    SharedMemoryIPC *owner = nullptr;
+    stringstream capture_debug;
+};
+
+TEST_F(SharedIPCPermissionsTest, attachment_ownership_and_mode)
+{
+    // Exercise the deployment's root -> kong ownership change; adapt for non-root test runners.
+    const bool privileged = geteuid() == 0;
+    const uid_t attachment_uid = privileged ? 1001 : geteuid();
+    const gid_t attachment_gid = privileged ? 1001 : getegid();
+    owner = initIpc(name.c_str(), attachment_uid, attachment_gid, 1, num_of_shmem_elem, debugFunc);
+    ASSERT_NE(owner, nullptr);
+    expectPermissions(attachment_uid, attachment_gid, privileged ? 0660 : 0666);
+    if (!privileged) EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+}
+
+TEST_F(SharedIPCPermissionsTest, unusable_attachment_ids_keep_legacy_access)
+{
+    const uint32_t invalid_ids[][2] = {{0, 1001}, {1001, 0}, {UINT32_MAX, 1001}, {1001, UINT32_MAX}};
+    for (const auto &ids : invalid_ids) {
+        capture_debug.str("");
+        owner = initIpc(name.c_str(), ids[0], ids[1], 1, num_of_shmem_elem, debugFunc);
+        ASSERT_NE(owner, nullptr);
+        expectPermissions(geteuid(), getegid(), 0666);
+        EXPECT_THAT(capture_debug.str(), HasSubstr("keeping mode 0666"));
+        destroyIpc(owner, 1);
+        owner = nullptr;
     }
 }
 

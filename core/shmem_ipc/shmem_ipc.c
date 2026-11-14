@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #include "shared_ring_queue.h"
 #include "shared_ipc_debug.h"
@@ -59,6 +60,45 @@ isTowardsOwner(int is_owner, int is_tx)
 {
     if (is_owner) return !is_tx;
     return is_tx;
+}
+
+static int
+setQueuePermissions(const char *path, uint32_t user_id, uint32_t group_id)
+{
+    int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (fd == -1) {
+        writeDebug(WarningLevel, "Failed to open IPC queue '%s' for permissions: %s", path, strerror(errno));
+        return -1;
+    }
+
+    mode_t mode = 0666;
+    // Only a privileged owner with explicit attachment IDs can safely restrict access.
+    // In particular, (uid_t)-1 and (gid_t)-1 mean 'leave unchanged' to fchown.
+    if (geteuid() != 0 || user_id == 0 || group_id == 0 ||
+        (uid_t)user_id == (uid_t)-1 || (gid_t)group_id == (gid_t)-1 ||
+        (uint32_t)(uid_t)user_id != user_id || (uint32_t)(gid_t)group_id != group_id
+    ) {
+        writeDebug(
+            WarningLevel,
+            "Cannot restrict IPC queue '%s' for attachment uid=%u gid=%u with owner euid=%u; keeping mode 0666",
+            path, user_id, group_id, (unsigned int)geteuid()
+        );
+    } else if (fchown(fd, (uid_t)user_id, (gid_t)group_id) == -1) {
+        writeDebug(
+            WarningLevel,
+            "Failed to set attachment ownership on IPC queue '%s' (uid=%u gid=%u): %s; keeping mode 0666",
+            path, user_id, group_id, strerror(errno)
+        );
+    } else {
+        mode = 0660;
+    }
+
+    int result = fchmod(fd, mode);
+    if (result == -1) {
+        writeDebug(WarningLevel, "Failed to set permissions on IPC queue '%s': %s", path, strerror(errno));
+    }
+    close(fd);
+    return result;
 }
 
 static SharedRingQueue *
@@ -100,8 +140,7 @@ createOneWayIPCQueue(
         return NULL;
     }
 
-    if (is_owner && chmod(shmem_path, 0666) == -1) {
-        writeDebug(WarningLevel, "Failed to set the permissions");
+    if (is_owner && setQueuePermissions(shmem_path, user_id, group_id) == -1) {
         destroySharedRingQueue(ring_queue, is_owner, isTowardsOwner(is_owner, is_tx_queue));
         return NULL;
     }
