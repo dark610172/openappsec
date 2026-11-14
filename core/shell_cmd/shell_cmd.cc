@@ -13,7 +13,9 @@
 
 #include "shell_cmd.h"
 
+#include <cerrno>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "singleton.h"
 #include "i_time_get.h"
@@ -78,21 +80,33 @@ public:
             dbgError(D_INFRA_API) << "Failed to open \"" << cmd << "\" command pipe";
             return genError("Popen(" + cmd + ", r) failed ");
         }
-        fcntl(fileno(pipe), F_SETFL, O_NONBLOCK);
+        const int pipe_fd = fileno(pipe);
+        if (fcntl(pipe_fd, F_SETFL, O_NONBLOCK) == -1) {
+            pclose(pipe);
+            return genError("Failed to set nonblocking mode for shell command: " + cmd);
+        }
 
         auto timer = Singleton::Consume<I_TimeGet>::by<ShellCmd>();
         chrono::microseconds timeout = timer->getMonotonicTime() + chrono::milliseconds(ms_tmout);
         string result;
-        while (!feof(pipe)) {
+        while (true) {
             if (timer->getMonotonicTime() >= timeout ) {
                 pclose(pipe);
                 dbgWarning(D_INFRA_API) << "Reached timeout while executing shell command: " << cmd;
                 return genError("Reached timeout while executing shell command: " + cmd);
             }
 
-            char buffer[128];
-            bool did_get = fgets(buffer, sizeof(buffer)-1, pipe) != nullptr;
-            if (did_get) result += buffer;
+            // Read bytes directly: nonblocking stdio can discard a partial line on EAGAIN.
+            char buffer[4096];
+            const ssize_t bytes_read = read(pipe_fd, buffer, sizeof(buffer));
+            if (bytes_read == 0) break;
+            const bool did_get = bytes_read > 0;
+            if (did_get) {
+                result.append(buffer, static_cast<size_t>(bytes_read));
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                pclose(pipe);
+                return genError("Failed to read output while executing shell command: " + cmd);
+            }
             if (do_yield && mainloop != nullptr) mainloop->yield(!did_get);
         }
 
