@@ -319,6 +319,68 @@ TEST_F(CompressionUtilsTest, CompressAndDecompressSimpleString)
     }
 }
 
+TEST_F(CompressionUtilsTest, DecompressConcatenatedGzipMembers)
+{
+    auto first = compressString(CompressionType::GZIP, "safe");
+    auto second = compressString(CompressionType::GZIP, "D2MARKER");
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
+
+    int is_last_chunk = 0;
+    auto result = decompressString(first.unpack() + second.unpack(), &is_last_chunk);
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.unpack(), "safeD2MARKER");
+    EXPECT_EQ(is_last_chunk, 1);
+}
+
+TEST_F(CompressionUtilsTest, DecompressConcatenatedGzipMembersAcrossChunks)
+{
+    auto first = compressString(CompressionType::GZIP, "safe");
+    auto second = compressString(CompressionType::GZIP, "D2MARKER");
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
+    const string compressed = first.unpack() + second.unpack();
+
+    // Exercise every split, including exactly between members and within headers/trailers.
+    for (size_t split = 1; split < compressed.size(); ++split) {
+        auto stream = initCompressionStream();
+        int is_last_chunk = 0;
+        auto prefix = decompressString(compressed.substr(0, split), &is_last_chunk, stream);
+        EXPECT_EQ(is_last_chunk, split == first.unpack().size() ? 1 : 0);
+        auto suffix = decompressString(compressed.substr(split), &is_last_chunk, stream);
+        finiCompressionStream(stream);
+
+        ASSERT_TRUE(prefix.ok()) << split;
+        ASSERT_TRUE(suffix.ok()) << split;
+        EXPECT_EQ(prefix.unpack() + suffix.unpack(), "safeD2MARKER") << split;
+        EXPECT_EQ(is_last_chunk, 1) << split;
+    }
+}
+
+TEST_F(CompressionUtilsTest, DecompressGzipRejectsTrailingGarbage)
+{
+    auto compressed = compressString(CompressionType::GZIP, "safe");
+    ASSERT_TRUE(compressed.ok());
+    EXPECT_FALSE(decompressString(compressed.unpack() + "garbage").ok());
+}
+
+TEST_F(CompressionUtilsTest, DecompressConcatenatedGzipMembersIncludingEmptyMembers)
+{
+    auto empty = compressString(CompressionType::GZIP, "");
+    auto content = compressString(CompressionType::GZIP, "D2MARKER");
+    ASSERT_TRUE(empty.ok());
+    ASSERT_TRUE(content.ok());
+    const string member = empty.unpack();
+    int is_last_chunk = 0;
+    auto result = decompressString(
+        member + member + member + member + content.unpack() + member,
+        &is_last_chunk
+    );
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.unpack(), "D2MARKER");
+    EXPECT_EQ(is_last_chunk, 1);
+}
+
 TEST_F(CompressionUtilsTest, CompressAndDecompressChunkSizedString)
 {
     string test_string = readTestFileContents(chunk_sized_string_file_name);
@@ -631,6 +693,10 @@ TEST_F(CompressionUtilsTest, ExceptionHandling_InvalidDecompressionData)
         invalid_data
     );
     EXPECT_EQ(result.ok, 0);
+    EXPECT_EQ(result.error, DECOMPRESSION_ERROR_FAILED);
+    EXPECT_EQ(result.output, nullptr);
+    EXPECT_EQ(result.num_output_bytes, 0u);
+    EXPECT_EQ(result.is_last_chunk, 0);
     EXPECT_THAT(
         capture_debug.str(),
         AnyOf(HasSubstr("Decompression failed"), HasSubstr("error in 'inflate'"))
@@ -702,6 +768,144 @@ TEST_F(CompressionUtilsTest, DecompressWithExplicitBrotliType)
     string decompressed(reinterpret_cast<char *>(result.output), result.num_output_bytes);
     free(result.output);
     EXPECT_EQ(simple_test_string, decompressed);
+}
+
+TEST_F(CompressionUtilsTest, DecompressionOutputBudgetRejectsHighRatioInput)
+{
+    const size_t budget = 1024 * 1024;
+    const string bomb(64 * 1024 * 1024, '\0');
+    for (auto type : { CompressionType::GZIP, CompressionType::ZLIB, CompressionType::BROTLI }) {
+        auto compressed = compressString(type, bomb);
+        ASSERT_TRUE(compressed.ok());
+        ASSERT_LT(compressed.unpack().size(), budget);
+
+        auto stream = initCompressionStream();
+        setDecompressionOutputLimit(stream, budget);
+        auto result = decompressDataSafe(
+            stream,
+            type,
+            compressed.unpack().size(),
+            reinterpret_cast<const unsigned char *>(compressed.unpack().data())
+        );
+        // A caller cannot resume an overflowed stream and bypass the total budget.
+        auto retry = decompressDataSafe(
+            stream,
+            type,
+            compressed.unpack().size(),
+            reinterpret_cast<const unsigned char *>(compressed.unpack().data())
+        );
+        finiCompressionStream(stream);
+
+        EXPECT_EQ(result.ok, 0);
+        EXPECT_EQ(result.error, DECOMPRESSION_ERROR_OUTPUT_LIMIT);
+        EXPECT_EQ(result.num_output_bytes, 0u);
+        EXPECT_EQ(result.output, nullptr);
+        EXPECT_EQ(result.is_last_chunk, 0);
+        EXPECT_EQ(retry.ok, 0);
+        EXPECT_EQ(retry.error, DECOMPRESSION_ERROR_OUTPUT_LIMIT);
+        EXPECT_EQ(retry.num_output_bytes, 0u);
+        EXPECT_EQ(retry.output, nullptr);
+        free(result.output);
+        free(retry.output);
+    }
+}
+
+TEST_F(CompressionUtilsTest, DecompressionOutputBudgetAllowsExactLimitAndEmptyOutput)
+{
+    for (auto type : { CompressionType::GZIP, CompressionType::ZLIB, CompressionType::BROTLI }) {
+        for (size_t budget : { size_t(0), size_t(8192) }) {
+            const string original(budget, 'A');
+            auto compressed = compressString(type, original);
+            ASSERT_TRUE(compressed.ok());
+            auto stream = initCompressionStream();
+            setDecompressionOutputLimit(stream, budget);
+            auto result = decompressDataSafe(
+                stream,
+                type,
+                compressed.unpack().size(),
+                reinterpret_cast<const unsigned char *>(compressed.unpack().data())
+            );
+            finiCompressionStream(stream);
+
+            EXPECT_EQ(result.ok, 1);
+            EXPECT_EQ(result.error, DECOMPRESSION_ERROR_NONE);
+            EXPECT_EQ(result.num_output_bytes, budget);
+            if (result.ok) {
+                EXPECT_EQ(string(reinterpret_cast<char *>(result.output), result.num_output_bytes), original);
+            }
+            EXPECT_EQ(result.is_last_chunk, 1);
+            free(result.output);
+        }
+    }
+}
+
+TEST_F(CompressionUtilsTest, DecompressionOutputBudgetIsCumulativeAcrossChunks)
+{
+    const string original(8192, 'A');
+    for (auto type : compression_types) {
+        auto encoder = initCompressionStream();
+        auto first = compressString(type, original, false, encoder);
+        auto second = compressString(type, original, true, encoder);
+        finiCompressionStream(encoder);
+        ASSERT_TRUE(first.ok());
+        ASSERT_TRUE(second.ok());
+
+        auto stream = initCompressionStream();
+        setDecompressionOutputLimit(stream, original.size() * 2 - 1);
+        auto prefix = decompressDataSafe(
+            stream,
+            type,
+            first.unpack().size(),
+            reinterpret_cast<const unsigned char *>(first.unpack().data())
+        );
+        auto suffix = decompressDataSafe(
+            stream,
+            type,
+            second.unpack().size(),
+            reinterpret_cast<const unsigned char *>(second.unpack().data())
+        );
+        finiCompressionStream(stream);
+
+        EXPECT_EQ(prefix.ok, 1);
+        EXPECT_EQ(prefix.num_output_bytes, original.size());
+        EXPECT_EQ(prefix.is_last_chunk, 0);
+        EXPECT_EQ(suffix.ok, 0);
+        EXPECT_EQ(suffix.error, DECOMPRESSION_ERROR_OUTPUT_LIMIT);
+        EXPECT_EQ(suffix.num_output_bytes, 0u);
+        EXPECT_EQ(suffix.output, nullptr);
+        free(prefix.output);
+        free(suffix.output);
+    }
+}
+
+TEST_F(CompressionUtilsTest, DecompressionOutputBudgetIsCumulativeAcrossGzipMembers)
+{
+    auto first = compressString(CompressionType::GZIP, "safe");
+    auto second = compressString(CompressionType::GZIP, "D2MARKER");
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
+    for (bool split : { false, true }) {
+        auto stream = initCompressionStream();
+        setDecompressionOutputLimit(stream, 11);
+        const string input = split ? second.unpack() : first.unpack() + second.unpack();
+        if (split) {
+            auto prefix = decompressString(first.unpack(), nullptr, stream);
+            EXPECT_TRUE(prefix.ok());
+        }
+        auto result = decompressDataSafe(
+            stream,
+            CompressionType::GZIP,
+            input.size(),
+            reinterpret_cast<const unsigned char *>(input.data())
+        );
+        finiCompressionStream(stream);
+
+        EXPECT_EQ(result.ok, 0);
+        EXPECT_EQ(result.error, DECOMPRESSION_ERROR_OUTPUT_LIMIT);
+        EXPECT_EQ(result.num_output_bytes, 0u);
+        EXPECT_EQ(result.output, nullptr);
+        free(result.output);
+    }
 }
 
 // Plain text with explicit BROTLI type must fail (no misclassification)

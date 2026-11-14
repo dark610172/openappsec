@@ -19,6 +19,7 @@
 #include <array>
 #include <vector>
 #include <tuple>
+#include <stdexcept>
 #include <strings.h>
 #include <string.h>
 #include <zlib.h>
@@ -108,6 +109,12 @@ static const int zlib_finish_flush = Z_FINISH;
 static const int zlib_sync_flush = Z_SYNC_FLUSH;
 static const int zlib_no_flush = Z_NO_FLUSH;
 
+class DecompressionOutputLimitExceeded : public runtime_error
+{
+public:
+    DecompressionOutputLimitExceeded() : runtime_error("Decompression output limit exceeded") {}
+};
+
 struct CompressionStream
 {
     CompressionStream()
@@ -127,9 +134,17 @@ struct CompressionStream
         compression_type = type;
     }
 
+    void
+    setOutputLimit(size_t limit)
+    {
+        output_limit = min<size_t>(limit, DEFAULT_DECOMPRESSION_OUTPUT_LIMIT);
+    }
+
     tuple<basic_string<unsigned char>, bool>
     decompress(const unsigned char *data, uint32_t size)
     {
+        if (output_limit_exceeded) throw DecompressionOutputLimitExceeded();
+        accountOutput(0);
         if (state == TYPE::DECOMPRESS_BROTLI) return decompressBrotli(data, size);
 
         if (state == TYPE::UNINITIALIZED && size > 0) {
@@ -151,18 +166,22 @@ struct CompressionStream
         stream.avail_in = size;
         stream.next_in = data;
 
-        vector<unsigned char> work_space;
-        work_space.reserve(4096);
+        vector<unsigned char> work_space(4096);
         basic_string<unsigned char> res;
         int retries = 0;
+        bool needs_output = false;
 
-        while (stream.avail_in != 0) {
-            stream.avail_out = work_space.capacity();
+        while (stream.avail_in != 0 || needs_output) {
+            stream.avail_out = work_space.size();
             stream.next_out = work_space.data();
 
             auto old_total_out = stream.total_out;
+            auto old_avail_in = stream.avail_in;
 
             auto inflate_res = inflate(&stream, zlib_no_flush);
+
+            // A full output buffer can require a final drain with no input left.
+            if (inflate_res == Z_BUF_ERROR && old_avail_in == 0) break;
 
             if (inflate_res != Z_OK && inflate_res != Z_STREAM_END) {
                 fini();
@@ -170,8 +189,11 @@ struct CompressionStream
             }
 
             if (stream.total_out != old_total_out) {
-                res.append(work_space.data(), stream.total_out - old_total_out);
-            } else {
+                auto bytes_produced = stream.total_out - old_total_out;
+                accountOutput(bytes_produced);
+                res.append(work_space.data(), bytes_produced);
+                retries = 0;
+            } else if (stream.avail_in == old_avail_in && inflate_res != Z_STREAM_END) {
                 ++retries;
                 if (retries > max_retries) {
                     fini();
@@ -180,9 +202,21 @@ struct CompressionStream
             }
 
             if (inflate_res == Z_STREAM_END) {
+                auto next_member = stream.next_in;
+                auto remaining_input = stream.avail_in;
                 fini();
-                return make_tuple(res, true);
+                if (remaining_input == 0) return make_tuple(res, true);
+
+                // A gzip stream may contain multiple members in the same chunk.
+                // Keep decoding the remainder, including validating its header.
+                initInflate();
+                stream.next_in = next_member;
+                stream.avail_in = remaining_input;
+                retries = 0;
+                needs_output = false;
+                continue;
             }
+            needs_output = stream.avail_out == 0;
         }
 
         return make_tuple(res, false);
@@ -234,6 +268,17 @@ struct CompressionStream
     }
 
 private:
+    void
+    accountOutput(size_t size)
+    {
+        if (total_output > output_limit || size > output_limit - total_output) {
+            output_limit_exceeded = true;
+            fini();
+            throw DecompressionOutputLimitExceeded();
+        }
+        total_output += size;
+    }
+
     void
     initInflate()
     {
@@ -372,11 +417,7 @@ private:
         const uint8_t* next_in = data;
         size_t available_in = size;
 
-        size_t buffer_size = max<size_t>(size * 4, default_brotli_buffer_size);
-        vector<uint8_t> buffer(buffer_size);
-        
-        // Use a constant ratio for max buffer size relative to input size
-        const size_t max_buffer_size = 256 * 1024 * 1024; // 256 MB max buffer size
+        vector<uint8_t> buffer(default_brotli_buffer_size);
 
         while (true) {
             size_t available_out = buffer.size();
@@ -400,6 +441,7 @@ private:
             // Handle any produced output
             size_t bytes_produced = buffer.size() - available_out;
             if (bytes_produced > 0) {
+                accountOutput(bytes_produced);
                 output.append(buffer.data(), bytes_produced);
             }
 
@@ -410,16 +452,7 @@ private:
             }
 
             if (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
-                // Check if we've exceeded the maximum buffer size limit
-                if (buffer.size() >= max_buffer_size) {
-                    fini();
-                    throw runtime_error("Brotli decompression buffer size limit exceeded - possibly corrupted data");
-                }
-                
-                // Resize buffer to accommodate more output
-                size_t new_size = min(buffer.size() * 2, max_buffer_size);
-                buffer.resize(new_size);
-                continue; // Continue with the same input, new buffer
+                continue;
             }
 
             // If we reach here, we need more input but have no more to provide
@@ -527,6 +560,9 @@ private:
     }
 
     CompressionType compression_type;
+    size_t output_limit = DEFAULT_DECOMPRESSION_OUTPUT_LIMIT;
+    size_t total_output = 0;
+    bool output_limit_exceeded = false;
     z_stream stream;
         enum class TYPE {
         UNINITIALIZED,
@@ -562,6 +598,12 @@ void
 finiCompressionStream(CompressionStream *compression_stream)
 {
     delete compression_stream;
+}
+
+void
+setDecompressionOutputLimit(CompressionStream *compression_stream, size_t output_limit)
+{
+    if (compression_stream != nullptr) compression_stream->setOutputLimit(output_limit);
 }
 
 static unsigned char *
@@ -611,7 +653,7 @@ decompressData(
     const unsigned char *compressed_data
 )
 {
-    DecompressionResult result;
+    DecompressionResult result = {};
 
     try {
         if (compression_stream == nullptr) throw invalid_argument("Compression stream is NULL");
@@ -623,10 +665,14 @@ decompressData(
         result.num_output_bytes = get<0>(decompress).size();
         result.is_last_chunk = get<1>(decompress);
         result.ok = 1;
+    } catch (const DecompressionOutputLimitExceeded &e) {
+        zlibDbgError << "Decompression failed " << e.what();
+        result.error = DECOMPRESSION_ERROR_OUTPUT_LIMIT;
     } catch (const exception &e) {
         zlibDbgError << "Decompression failed " << e.what();
 
         result.ok = 0;
+        result.error = DECOMPRESSION_ERROR_FAILED;
     }
 
     return result;

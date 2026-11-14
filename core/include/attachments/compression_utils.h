@@ -50,6 +50,12 @@ typedef enum CompressionType
 CompressionStream * initCompressionStream();
 void finiCompressionStream(CompressionStream *compression_stream);
 
+#define DEFAULT_DECOMPRESSION_OUTPUT_LIMIT (256u * 1024u * 1024u)
+
+// Limit total decoded bytes over the lifetime of the stream, across chunks and members.
+// May lower the default limit; changing it does not reset usage or a previous limit failure.
+void setDecompressionOutputLimit(CompressionStream *compression_stream, size_t output_limit);
+
 typedef struct CompressionResult
 {
     int            ok;
@@ -66,12 +72,21 @@ compressData(
     const int is_last_chunk
 );
 
+typedef enum DecompressionError
+{
+    DECOMPRESSION_ERROR_NONE,
+    DECOMPRESSION_ERROR_FAILED,
+    DECOMPRESSION_ERROR_OUTPUT_LIMIT
+} DecompressionError;
+
 typedef struct DecompressionResult
 {
+    // All errors, including budget exhaustion, set ok to 0 and return no output.
     int            ok;
     uint32_t       num_output_bytes;
     unsigned char *output;
     int            is_last_chunk;
+    DecompressionError error;
 } DecompressionResult;
 
 DecompressionResult
