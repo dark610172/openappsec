@@ -45,12 +45,14 @@ TEST(IpUtilitiesCidrTest, OutOfRangeIPv4MaskIsRejected)
     EXPECT_FALSE(IPUtilities::createRangeFromCidr("10.0.0.0/-1").ok());
 }
 
-TEST(IpUtilitiesCidrTest, ZeroMaskIPv6IsDefinedAndNonEmpty)
+TEST(IpUtilitiesCidrTest, ZeroMaskIPv6CoversWholeAddressSpace)
 {
-    auto range = IPUtilities::createRangeFromCidr("::/0");
+    auto range = IPUtilities::createRangeFromString<IPRange, IpAddress>("::/0", "IPv6");
     ASSERT_TRUE(range.ok()) << range.getErr();
-    EXPECT_NE("", range.unpack().first);
-    EXPECT_NE("", range.unpack().second);
+    EXPECT_EQ("::", IPUtilities::IpAddrToString(range.unpack().start));
+    EXPECT_EQ("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", IPUtilities::IpAddrToString(range.unpack().end));
+    EXPECT_TRUE(IPUtilities::isIpAddrInRange(range.unpack(), IPUtilities::createIpFromString("2001:db8::1")));
+    EXPECT_TRUE(IPUtilities::isIpAddrInRange(range.unpack(), IPUtilities::createIpFromString("fe80::1")));
 }
 
 TEST(IpUtilitiesCidrTest, OutOfRangeIPv6MaskIsRejected)
