@@ -313,6 +313,7 @@ TEST_F(SnortConversionTest, KeepsConvertedRulesWhenSomeRulesHitInternalErrors)
         "Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}],"InputRules":2
     })";
     expectConversion("custom.rules", "'custom.rules'", "custom.rules");
+    expectConvertedOutput();
     CPTestTempfile output({"previous policy"});
     string generated = generate("custom.rules", output.fname);
     rapidjson::Document document;
