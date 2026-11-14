@@ -38,6 +38,7 @@
 #include <boost/regex.hpp>
 
 #include "nginx_attachment_config.h"
+#include "attachment_config_publisher.h"
 #include "nginx_attachment_opaque.h"
 #include "generic_rulebase/evaluators/trigger_eval.h"
 #include "nginx_parser.h"
@@ -844,7 +845,45 @@ private:
     void
     generateAttachmentConfig()
     {
-        auto on_exit = make_scope_exit(
+        auto tenant_header_key = getProfileAgentSetting<string>("tenantIdKey");
+        if (tenant_header_key.ok()) NginxParser::tenant_header_key = tenant_header_key.unpack();
+
+        HttpAttachmentConfig new_conf;
+        new_conf.init();
+
+        default_verdict = FilterVerdict(new_conf.getIsFailOpenModeEnabled() ? ACCEPT : DROP);
+
+        bool published = attachment_config_publisher.publish(
+            new_conf,
+            attachment_config,
+            num_of_nginx_ipc_elements,
+            [&new_conf]()
+            {
+                // Destroy the archive before taking the string, so the final JSON delimiter is included.
+                ostringstream content;
+                {
+                    cereal::JSONOutputArchive archive_out(content);
+                    new_conf.save(archive_out);
+                }
+
+                string settings_path = getConfigurationWithDefault<string>(
+                    SHARED_ATTACHMENT_CONF_PATH,
+                    "HTTP manager",
+                    "Shared settings path"
+                );
+
+                for (uint retries = 0 ; retries < 3 ; retries++) {
+                    if (remove(settings_path.c_str()) == 0) break;
+                    usleep(1);
+                }
+
+                if (writeAttachmentSettings(settings_path, content.str())) return true;
+                dbgWarning(D_NGINX_ATTACHMENT)
+                    << "Could not set new attachment settings. Error: shared settings file \""
+                    << settings_path
+                    << "\" could not be opened, written or closed";
+                return false;
+            },
             [this]()
             {
                 if (primary_attachment_ipc == nullptr) return;
@@ -856,36 +895,7 @@ private:
                     << primary_attachment_ipc;
             }
         );
-
-        auto tenant_header_key = getProfileAgentSetting<string>("tenantIdKey");
-        if (tenant_header_key.ok()) NginxParser::tenant_header_key = tenant_header_key.unpack();
-
-        HttpAttachmentConfig new_conf;
-        new_conf.init();
-
-        default_verdict = FilterVerdict(new_conf.getIsFailOpenModeEnabled() ? ACCEPT : DROP);
-
-        if (attachment_config == new_conf) return;
-        attachment_config = new_conf;
-        num_of_nginx_ipc_elements = new_conf.getNumOfNginxElements();
-
-        string settings_path = getConfigurationWithDefault<string>(
-            SHARED_ATTACHMENT_CONF_PATH,
-            "HTTP manager",
-            "Shared settings path"
-        );
-
-        for (uint retries = 0 ; retries < 3 ; retries++) {
-            if (remove(settings_path.c_str()) == 0) break;
-            usleep(1);
-        }
-
-        ofstream setting_stream(settings_path, ofstream::out);
-        if (!setting_stream.is_open()) {
-            dbgWarning(D_NGINX_ATTACHMENT)
-                << "Could not set new attachment settings. Error: shared settings file \""
-                << settings_path
-                << "\" could not be opened";
+        if (!published) {
             mainloop->addOneTimeRoutine(
                 I_MainLoop::RoutineType::Offline,
 // LCOV_EXCL_START Reason: coverage upgrade
@@ -894,11 +904,7 @@ private:
                 "Nginx Attachment configuration generator",
                 false
             );
-            return;
         }
-
-        cereal::JSONOutputArchive archive_out(setting_stream);
-        attachment_config.save(archive_out);
     }
 
     void
@@ -2316,6 +2322,7 @@ private:
     SharedMemoryIPC *primary_attachment_ipc = nullptr;
     SharedMemoryIPC *secondary_attachment_sync_ipc = nullptr;
     HttpAttachmentConfig attachment_config;
+    AttachmentConfigPublisher attachment_config_publisher;
     I_MainLoop::RoutineID attachment_routine_id = 0;
     I_MainLoop::RoutineID secondary_attachment_routine_id = 0;
     bool traffic_indicator = false;
