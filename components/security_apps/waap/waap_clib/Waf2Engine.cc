@@ -49,6 +49,7 @@
 #include "LogGenWrapper.h"
 #include "reputation_features_events.h"
 #include "telemetry.h"
+#include "AttackTypeTelemetry.h"
 #include "agent_core_utilities.h"
 
 USE_DEBUG_FLAG(D_WAAP);
@@ -1777,6 +1778,7 @@ Waf2Transaction::sendLog()
     std::string attackTypes = buildAttackTypes();
     std::string logOverride = "None";
     DecisionTelemetryData telemetryData;
+    Waap::populateAttackTypeTelemetry(telemetryData, attackTypes);
     std::string assetId = m_siteConfig->get_AssetId();
 
     I_TimeGet *timeGet = Singleton::Consume<I_TimeGet>::by<Waf2Transaction>();

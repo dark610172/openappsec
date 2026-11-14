@@ -28,6 +28,7 @@ add_library(waap_clib
     WaapRegexPreconditions.cc
     Waf2Regex.cc
     WaapAssetState.cc
+    WaapUnicode.cc
     Signatures.cc
     Waf2Util.cc
     WaapConfigBase.cc
@@ -111,6 +112,18 @@ add_unit_test(
     waap_parsers_ut
     "waap_parsers_ut.cc;ParserJson.cc;ParserBase.cc;KeyStack.cc"
     "yajl_s"
+)
+
+add_unit_test(
+    attack_type_telemetry_ut
+    "attack_type_telemetry_ut.cc"
+    ""
+)
+
+add_unit_test(
+    waap_unicode_ut
+    "waap_unicode_ut.cc;WaapUnicode.cc"
+    ""
 )
 
 #target_link_libraries(waap_clib pm buffers generic_rulebase ip_utilities connkey report_messaging compression_utils -lz)

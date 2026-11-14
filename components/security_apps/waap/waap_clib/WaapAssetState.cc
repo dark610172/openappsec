@@ -193,76 +193,6 @@ WaapAssetState::WaapAssetState(
         m_filtersMngr->reset();
     }
 
-    void filterUnicode(std::string & text) {
-        std::string::iterator it = text.begin();
-        std::string::iterator result = it;
-        uint32_t acc = 0;
-        int bytes_left = 0;
-
-        for (; it != text.end(); ++it) {
-            unsigned char ch = (unsigned char)(*it);
-
-            // If character high bits are 10xxxxxx, then it might be UTF-8 character used to evade.
-            // For example 0xc0, 0xaf may mean '/' in broken utf-8 decoders
-            // In our implementation we do remove leading byte in UTF8 encoding (such as 0xc0),
-            // but strip down the following bytes (with high bits 01).
-            if (ch <= 127) {
-                *result++ = ch;
-                bytes_left = 0; // any character <= 127 stops collecting UTF8 code
-            }
-            else {
-                if (bytes_left == 0) {
-                    // collect utf8 code
-                    if ((ch & 0xE0) == 0xC0) { // 110X XXXX  two bytes follow
-
-                        if ((ch & 0x1E) != 0) {
-                            acc = ch & 31;
-                        }
-                        bytes_left = 1;
-                    }
-                    else if ((ch & 0xF0) == 0xE0) { // 1110 XXXX  three bytes follow
-                        acc = ch & 15;
-                        bytes_left = 2;
-                    }
-                    else if ((ch & 0xF8) == 0xF0) { // 1111 0XXX  four bytes follow
-                        acc = ch & 7;
-                        bytes_left = 3;
-                    }
-                    else if ((ch & 0xFC) == 0xF8) { // 1111 10XX  five bytes follow (by standard -an error)
-                        acc = ch & 3;
-                        bytes_left = 4;
-                    }
-                    else if ((ch & 0xFE) == 0xFC) { // 1111 110X  six bytes follow (by standard -an error)
-                        acc = ch & 1;
-                        bytes_left = 5;
-                    }
-                    else {
-                        // error
-                        bytes_left = 0;
-                    }
-                }
-                else if (bytes_left > 0) {
-                    // "good" encoder would check that the following bytes contain "10" as their high bits,
-                    // but buggy encoders don't, so are we!
-                    acc = (acc << 6) | (ch & 0x3F);
-                    bytes_left--;
-
-                    if (bytes_left == 0) {
-                        // finished collecting the utf8 code
-                        if (acc <= 127) {
-                            *result++ = acc;
-                        }
-                        else if (isSpecialUnicode(acc)) {
-                            *result++ = convertSpecialUnicode(acc);
-                        }
-                        acc = 0;
-                    }
-                }
-            }
-        }
-
-        text.erase(result, text.end());
-    }
 
 #if 0
     //std::replace_if(text.begin(), text.end(), [](char c) { return !(c>=0); }, ' ');
@@ -434,9 +364,7 @@ WaapAssetState::WaapAssetState(
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (0) '" << text << "'";
 
         fixBreakingSpace(text);
-        // 1. remove all unicode characters from string. Basically,
-        // remove all characters whose ASCII code is >=128.
-        // Python equivalent: text.encode('ascii',errors='ignore')
+        // 1. Normalize Unicode to ASCII while preserving word boundaries.
         filterUnicode(text);
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (1) '" << text << "'";
 
@@ -462,9 +390,7 @@ WaapAssetState::WaapAssetState(
 
         fixBreakingSpace(text);
 
-        // 3. remove all unicode characters from string. Basically,
-        // remove all characters whose ASCII code is >=128.
-        // Python equivalent: text.encode('ascii',errors='ignore')
+        // 3. Normalize Unicode to ASCII while preserving word boundaries.
         filterUnicode(text);
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (3) '" << text << "' size: " << text.size();
 
@@ -478,9 +404,7 @@ WaapAssetState::WaapAssetState(
         text.erase(escape_backslashes(text.begin(), text.end()), text.end());
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (5) '" << text << "' size: " << text.size();
 
-        // 6. remove all unicode characters from string. Basically,
-        // remove all characters whose ASCII code is >=128.
-        // Python equivalent: text.encode('ascii',errors='ignore')
+        // 6. Normalize Unicode to ASCII while preserving word boundaries.
         filterUnicode(text);
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (6) '" << text << "' size: " << text.size();
 
@@ -493,9 +417,7 @@ WaapAssetState::WaapAssetState(
         unescapeUnicode(text);
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "after unescapeUnicode '" << text << "' size: " << text.size();
 
-        // 8. remove all unicode characters from string. Basically,
-        // remove all characters whose ASCII code is >=128.
-        // Python equivalent: text.encode('ascii',errors='ignore')
+        // 8. Normalize Unicode to ASCII while preserving word boundaries.
         filterUnicode(text);
         dbgTrace(D_WAAP_SAMPLE_PREPROCESS) << "unescape: (8) '" << text << "' size: " << text.size();
 
