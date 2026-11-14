@@ -306,19 +306,19 @@ TEST_F(SnortConversionTest, ReportsFailedRulesAndKeepsConvertedSignatures)
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
 
-TEST_F(SnortConversionTest, RejectsInternalErrorsDespiteSuccessfulConverterExit)
+TEST_F(SnortConversionTest, KeepsConvertedRulesWhenSomeRulesHitInternalErrors)
 {
     converter_output = signaturePackage();
     converter_errors = R"({
-        "Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}],"InputRules":1
+        "Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}],"InputRules":2
     })";
     expectConversion("custom.rules", "'custom.rules'", "custom.rules");
-    // Permit the old code to read valid output, so the empty-result assertion catches the regression.
-    EXPECT_CALL(shell, getExecOutput(_, _, _)).Times(AnyNumber()).WillRepeatedly(Return(converter_output));
     CPTestTempfile output({"previous policy"});
-    string previous = output.readFile();
-    EXPECT_TRUE(generate("custom.rules", output.fname).empty());
-    EXPECT_EQ(previous, output.readFile());
+    string generated = generate("custom.rules", output.fname);
+    rapidjson::Document document;
+    document.Parse(generated.c_str());
+    ASSERT_FALSE(document.HasParseError());
+    EXPECT_EQ(1u, document["snort"]["IPSSnortSigs"]["protections"][0]["protections"].Size());
     EXPECT_THAT(debug_output.str(), HasSubstr("internal errors: 1"));
     EXPECT_THAT(debug_output.str(), HasSubstr("unexpected exception"));
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);

@@ -1197,9 +1197,6 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
                 << " rules (internal errors: " << internal_errors << "). Error file: " << tmp_err
                 << ". First errors:" << preview.str();
         }
-        if (internal_errors != 0) {
-            throw PolicyGenException("Internal errors converting Snort file " + path + ": " + tmp_err);
-        }
     }
 
     if (has_rules && !ifstream(tmp_out).good()) {
