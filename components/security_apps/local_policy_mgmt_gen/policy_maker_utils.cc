@@ -1152,15 +1152,23 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
     }
 
     // Diagnostics are JSON, with one {Error, Line} entry per rejected rule.
-    // Older converters only emit Errors; InternalErrors is optional.
+    // InternalErrors and InputRules are optional for older converters.
+    bool has_rules = false;
     ifstream errors_file(tmp_err);
     stringstream errors_text;
     errors_text << errors_file.rdbuf();
     rapidjson::Document errors;
     errors.Parse(errors_text.str().c_str());
     if (!errors_file.is_open() || errors_file.bad() || errors.HasParseError() || !errors.IsObject()) {
-        dbgWarning(D_LOCAL_POLICY) << "Could not read Snort conversion diagnostics: " << tmp_err;
+        dbgWarning(D_LOCAL_POLICY) << "Could not read Snort conversion diagnostics: " << tmp_err
+            << ". Input rule count is unknown; skipping empty signature package check";
     } else {
+        if (errors.HasMember("InputRules") && errors["InputRules"].IsUint64()) {
+            has_rules = errors["InputRules"].GetUint64() != 0;
+        } else {
+            dbgWarning(D_LOCAL_POLICY) << "Snort conversion input rule count is unknown: " << tmp_err
+                << ". Missing or invalid InputRules; skipping empty signature package check";
+        }
         size_t failed_rules = 0;
         size_t internal_errors = 0;
         size_t preview_lines = 0;
@@ -1194,17 +1202,6 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
         }
     }
 
-    // Match the converter's input filtering: blank lines and comments are not rules.
-    ifstream input_file(path);
-    string line;
-    bool has_rules = false;
-    while (getline(input_file, line)) {
-        auto first = line.find_first_not_of(" \t\r\n");
-        if (first != string::npos && line[first] != '#') {
-            has_rules = true;
-            break;
-        }
-    }
     if (has_rules && !ifstream(tmp_out).good()) {
         throw PolicyGenException("Missing converted Snort signature package for " + path + ": " + tmp_out);
     }

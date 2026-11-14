@@ -11,6 +11,7 @@ class Signatures:
         self.signatures = []
         self.error_rules = []
         self.error_internal = []
+        self.input_rules = 0
 
     def load_snort_signatures(self, rules_input):
         line_number = 0
@@ -18,6 +19,7 @@ class Signatures:
             line_number += 1
             if is_invalid_line(line):
                 continue
+            self.input_rules += 1
             rule = line.strip()
             header, body = parse_snort_rules_line(rule)
             try:
@@ -34,9 +36,14 @@ class Signatures:
     def reset(self):
         self.signatures = []
         self.error_rules = []
+        self.input_rules = 0
 
     def output_errors(self, output_pf):
-        output = {"Errors": self.error_rules, "InternalErrors": self.error_internal}
+        output = {
+            "Errors": self.error_rules,
+            "InternalErrors": self.error_internal,
+            "InputRules": self.input_rules
+        }
         with open(output_pf, 'w') as f:
             json.dump(output, f, ensure_ascii=False, indent=4)
 

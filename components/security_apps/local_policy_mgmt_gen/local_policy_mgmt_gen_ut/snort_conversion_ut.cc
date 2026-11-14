@@ -260,7 +260,7 @@ protected:
     set<string> output_paths;
     vector<string> removed_paths;
     ostringstream debug_output;
-    string converter_errors = R"({"Errors":[],"InternalErrors":[]})";
+    string converter_errors = R"({"Errors":[],"InternalErrors":[],"InputRules":0})";
     string converter_output = R"({"IPSSnortSigs":{"protections":[]}})";
     bool write_errors = true;
     bool write_output = true;
@@ -282,13 +282,13 @@ TEST_F(SnortConversionTest, ReportsFailedRulesAndKeepsConvertedSignatures)
     });
     string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
     converter_output = signaturePackage();
-    // Legacy reports have no InternalErrors field. Extra fields must be harmless.
+    // InternalErrors is optional. Extra fields must be harmless.
     converter_errors = R"({"Errors":[
         {"Error":"unsupported http_encode","Line":2},
         {"Error":"second rejection","Line":3},
         {"Error":"third rejection","Line":4},
         {"Error":"fourth rejection omitted from preview","Line":5}
-    ],"extra":"ignored"})";
+    ],"InputRules":5,"extra":"ignored"})";
     expectConversion(input.fname, "'" + input.fname + "'", basename);
     expectConvertedOutput();
     CPTestTempfile output;
@@ -309,7 +309,9 @@ TEST_F(SnortConversionTest, ReportsFailedRulesAndKeepsConvertedSignatures)
 TEST_F(SnortConversionTest, RejectsInternalErrorsDespiteSuccessfulConverterExit)
 {
     converter_output = signaturePackage();
-    converter_errors = R"({"Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}]})";
+    converter_errors = R"({
+        "Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}],"InputRules":1
+    })";
     expectConversion("custom.rules", "'custom.rules'", "custom.rules");
     // Permit the old code to read valid output, so the empty-result assertion catches the regression.
     EXPECT_CALL(shell, getExecOutput(_, _, _)).Times(AnyNumber()).WillRepeatedly(Return(converter_output));
@@ -322,9 +324,33 @@ TEST_F(SnortConversionTest, RejectsInternalErrorsDespiteSuccessfulConverterExit)
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
 
-TEST_F(SnortConversionTest, RejectsZeroSignaturesWithNonEmptyInput)
+TEST_F(SnortConversionTest, RejectsZeroSignaturesWithReportedInputRulesForRelativePath)
 {
-    CPTestTempfile input({"# comment", "  ", "alert http any any -> any any (sid:1;)"});
+    CPTestTempfile input;
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    // The converter reports rules from its data directory; there is no input at the caller's relative path.
+    ASSERT_FALSE(ifstream(basename).good());
+    converter_errors = R"({"Errors":[],"InternalErrors":[],"InputRules":1})";
+    expectConversion(basename, "'" + basename + "'", basename);
+    expectConvertedOutput();
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate(basename, output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, RejectsZeroSignaturesWithReportedInputRulesForCrOnlyInput)
+{
+    CPTestTempfile input;
+    {
+        ofstream rules(input.fname, ios::binary | ios::trunc);
+        rules << "# comment\ralert badproto any any -> any any (sid:1;)\r";
+        ASSERT_TRUE(rules.good());
+    }
+    converter_errors = R"({
+        "Errors":[{"Error":"unsupported protocol","Line":2}],"InternalErrors":[],"InputRules":1
+    })";
     string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
     expectConversion(input.fname, "'" + input.fname + "'", basename);
     expectConvertedOutput();
@@ -332,19 +358,23 @@ TEST_F(SnortConversionTest, RejectsZeroSignaturesWithNonEmptyInput)
     string previous = output.readFile();
     EXPECT_TRUE(generate(input.fname, output.fname).empty());
     EXPECT_EQ(previous, output.readFile());
+    EXPECT_THAT(debug_output.str(), HasSubstr("Snort conversion failed for 1 rules"));
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
 
-TEST_F(SnortConversionTest, RejectsMissingPackageWithNonEmptyInput)
+TEST_F(SnortConversionTest, RejectsMissingPackageWithReportedInputRulesForRelativePath)
 {
-    CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    CPTestTempfile input;
     string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    ASSERT_FALSE(ifstream(basename).good());
+    converter_errors = R"({"Errors":[],"InternalErrors":[],"InputRules":1})";
     write_output = false;
-    expectConversion(input.fname, "'" + input.fname + "'", basename);
+    expectConversion(basename, "'" + basename + "'", basename);
+    // Permit the previous caller to read valid output, so rejection cannot depend on an unexpected mock call.
     EXPECT_CALL(shell, getExecOutput(_, _, _)).Times(AnyNumber()).WillRepeatedly(Return(signaturePackage()));
     CPTestTempfile output({"previous policy"});
     string previous = output.readFile();
-    EXPECT_TRUE(generate(input.fname, output.fname).empty());
+    EXPECT_TRUE(generate(basename, output.fname).empty());
     EXPECT_EQ(previous, output.readFile());
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
@@ -352,11 +382,13 @@ TEST_F(SnortConversionTest, RejectsMissingPackageWithNonEmptyInput)
 TEST_F(SnortConversionTest, CleanRunWithRulesKeepsSignaturesWithoutWarning)
 {
     CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    converter_errors = R"({"Errors":[],"InternalErrors":[],"InputRules":1})";
     converter_output = signaturePackage();
     string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
     checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
     EXPECT_THAT(debug_output.str(), Not(HasSubstr("Snort conversion failed")));
     EXPECT_THAT(debug_output.str(), Not(HasSubstr("Could not read Snort conversion diagnostics")));
+    EXPECT_THAT(debug_output.str(), Not(HasSubstr("input rule count is unknown")));
 }
 
 TEST_F(SnortConversionTest, AllowsEmptySignaturesForCommentsOnlyInput)
@@ -364,6 +396,30 @@ TEST_F(SnortConversionTest, AllowsEmptySignaturesForCommentsOnlyInput)
     CPTestTempfile input({"  # comment", "  ", ""});
     string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
     checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
+}
+
+TEST_F(SnortConversionTest, AllowsEmptySignaturesWithReportedZeroInputRules)
+{
+    // Only the converter's count is authoritative, even if a different input is readable by the caller.
+    CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
+    EXPECT_THAT(debug_output.str(), Not(HasSubstr("input rule count is unknown")));
+}
+
+TEST_F(SnortConversionTest, MissingInputRulesWarnsOnceAndAllowsEmptySignatures)
+{
+    CPTestTempfile input({"alert http any any -> any any (sid:1;)"});
+    converter_errors = R"({"Errors":[],"InternalErrors":[]})";
+    string basename = input.fname.substr(input.fname.find_last_of('/') + 1);
+    checkSuccessfulConversion(input.fname, "'" + input.fname + "'", basename);
+    const string warning = "Snort conversion input rule count is unknown: " + tmp_err;
+    string log = debug_output.str();
+    auto position = log.find(warning);
+    ASSERT_NE(string::npos, position);
+    EXPECT_EQ(string::npos, log.find(warning, position + warning.size()));
+    EXPECT_THAT(log, HasSubstr("Missing or invalid InputRules; skipping empty signature package check"));
+    EXPECT_THAT(log, Not(HasSubstr("Could not read Snort conversion diagnostics")));
 }
 
 TEST_F(SnortConversionTest, MissingDiagnosticsWarnsWithoutFailingGeneration)
