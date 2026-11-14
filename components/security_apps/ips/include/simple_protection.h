@@ -28,6 +28,7 @@ class SimpleProtection
         std::vector<std::string> context;
         std::shared_ptr<I_KeywordsRule::VirtualRule> rule;
         PMPattern pattern;
+        std::shared_ptr<PMHook> raw_pattern_matcher;
     };
 
 public:

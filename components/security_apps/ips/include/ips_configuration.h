@@ -27,6 +27,7 @@ public:
     void load(cereal::JSONInputArchive &ar);
 
     Context getContext(const std::string &name) const;
+    Context getContext(const std::string &name, const Context &fallback) const;
     uint getHistorySize(const std::string &name) const;
 
 private:

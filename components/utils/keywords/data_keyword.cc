@@ -358,7 +358,8 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
 
     dbgDebug(D_KEYWORD) << "Searching for " << dumpHex(pattern);
 
-    auto part = Singleton::Consume<I_Environment>::by<KeywordComp>()->get<Buffer>(static_cast<string>(ctx));
+    auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
+    auto part = env->get<Buffer>(static_cast<string>(ctx));
     if (!part.ok()) {
         if (is_negative) return runNext(prev);
         return MatchStatus::NoMatchFinal;
@@ -372,6 +373,14 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
 
     tie(offset, max_offset) = getStartAndEndOffsets(buf.size(), prev);
     offset += pattern.size();
+
+    // A terminal positive literal can skip candidates ending wholly in old overlap.
+    // Earlier literals remain searchable for relative chains that finish in new data.
+    auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
+    auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    bool has_boundary = context.ok() && *context == static_cast<string>(ctx) && boundary.ok();
+    bool skips_overlap = isLast() && !is_negative && has_boundary && prev->getMatchEnd(ctx) <= *boundary;
+    if (skips_overlap) offset = max(offset, *boundary + 1);
 
     bool match_found = false;
     while (offset<=max_offset) {
@@ -388,10 +397,11 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
                 return isConstant()?MatchStatus::NoMatchFinal:MatchStatus::NoMatch;
             }
             match_found = true;
-            OffsetRuntimeState new_offset(prev, ctx, offset);
+            OffsetRuntimeState new_offset(prev, ctx, offset, offset);
             auto next_keyword_result = runNext(&new_offset);
             if (next_keyword_result!=MatchStatus::NoMatch) return next_keyword_result;
-            offset += moveOnMatch();
+            // A rejected old occurrence may overlap a later occurrence reaching new data.
+            offset += has_boundary ? 1 : moveOnMatch();
         } else {
             offset += moveOnNoMatch(match_size, buf[offset-(match_size+1)]);
         }
@@ -401,7 +411,9 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
     if (is_negative && !match_found) return runNext(prev);
 
     // If there were no matchs and the keyword is an effected by other keywords, then we know that the rule won't match
-    if (isConstant() && !match_found) return MatchStatus::NoMatchFinal;
+    // Overlap rejection depends on previous match ends, even for an absolute literal.
+    // Let earlier keywords backtrack to a new occurrence before declaring a final failure.
+    if (isConstant() && !match_found && !skips_overlap) return MatchStatus::NoMatchFinal;
 
     return MatchStatus::NoMatch;
 }

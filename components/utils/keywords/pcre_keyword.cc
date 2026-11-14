@@ -348,7 +348,8 @@ PCREKeyword::isMatch(const I_KeywordRuntimeState *prev) const
         }
         match_found = true;
         buf_offset_found = pcre2_get_ovector_pointer(pcre_result.get())[0];
-        OffsetRuntimeState new_offset(prev, ctx, offset+buf_offset_found);
+        uint match_end = offset + pcre2_get_ovector_pointer(pcre_result.get())[1];
+        OffsetRuntimeState new_offset(prev, ctx, offset+buf_offset_found, match_end);
         auto next_keyword_result = runNext(&new_offset);
         if (next_keyword_result!=MatchStatus::NoMatch) return next_keyword_result;
         if (buf_offset_found<=buf_pos) buf_offset_found = buf_pos+1; // Deal with empty matches

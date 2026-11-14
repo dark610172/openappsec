@@ -47,9 +47,19 @@ IPSEntry::respond(const ParsedContext &parsed)
     dbgDebug(D_IPS) << "Entrying context " << name;
     dbgTrace(D_IPS) << "Context Content " << dumpHex(buf);
 
-    auto config = getConfigurationWithDefault(default_conf, "IPS", "IpsConfigurations").getContext(name);
+    const auto &configuration = getConfigurationWithDefault(default_conf, "IPS", "IpsConfigurations");
+    auto config = name == "HTTP_RAW"
+        ? configuration.getContext(name, default_conf.getContext(name))
+        : configuration.getContext(name);
+    uint overlap_size = 0;
     if (config.getType() == IPSConfiguration::ContextType::HISTORY) {
+        overlap_size = past_contexts[name].size();
         buf = past_contexts[name] + buf;
+    }
+    // Only RAW history opts into overlap suppression; other contexts retain their contract.
+    ctx.unregisterKey<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    if (name == "HTTP_RAW" && overlap_size > 0) {
+        ctx.registerValue(I_KeywordsRule::getNewDataOffsetTag(), overlap_size);
     }
     ctx.registerValue(I_KeywordsRule::getKeywordsRuleTag(), name);
     ctx.registerValue(name, buf);

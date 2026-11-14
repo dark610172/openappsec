@@ -177,7 +177,8 @@ public:
         auto full_header = header_value + line_sep;
         ips_state.addPendingContext("HTTP_REQUEST_HEADER", full_header);
         ips_state.addPendingContext(getHeaderContextName(event.getKey(), "HTTP_REQUEST_HEADER_"), event.getValue());
-        ips_state.addPendingContext("HTTP_RAW", full_header);
+        // An empty end-of-headers event carries no actual header line.
+        if (event.getKey().size() > 0) ips_state.addPendingContext("HTTP_RAW", full_header);
 
         auto max_size = getConfigurationWithDefault<uint>(1536, "IPS", "Max Field Size");
 
@@ -193,6 +194,8 @@ public:
 
         addRequestHdr(event.getKey(), event.getValue());
         if (event.isLastHeader()) {
+            // Each header already ends in CRLF; terminate the header block once.
+            ips_state.addPendingContext("HTTP_RAW", line_sep);
             for (auto &context : ips_state.getPendingContexts()) {
                 if (isDropContext(context.first, context.second)) setDrop(ips_state);
             }

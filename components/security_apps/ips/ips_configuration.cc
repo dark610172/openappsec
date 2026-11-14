@@ -62,9 +62,14 @@ IPSConfiguration::load(cereal::JSONInputArchive &ar)
 IPSConfiguration::Context
 IPSConfiguration::getContext(const string &name) const
 {
+    return getContext(name, Context());
+}
+
+IPSConfiguration::Context
+IPSConfiguration::getContext(const string &name, const Context &fallback) const
+{
     auto context = context_config.find(name);
-    if (context == context_config.end()) return IPSConfiguration::Context();
-    return context->second;
+    return context == context_config.end() ? fallback : context->second;
 }
 
 uint

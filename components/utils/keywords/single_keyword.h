@@ -78,6 +78,7 @@ class I_KeywordRuntimeState
 {
 public:
     virtual uint getOffset(const std::string &ctx) const = 0;
+    virtual uint getMatchEnd(const std::string &) const { return 0; }
     virtual uint getVariable(uint requested_var_id) const = 0;
 protected:
     virtual ~I_KeywordRuntimeState()
@@ -88,17 +89,19 @@ protected:
 class OffsetRuntimeState : public I_KeywordRuntimeState
 {
 public:
-    OffsetRuntimeState(const I_KeywordRuntimeState *prev, const std::string &ctx, uint offset);
+    OffsetRuntimeState(const I_KeywordRuntimeState *prev, const std::string &ctx, uint offset, uint match_end = 0);
     virtual ~OffsetRuntimeState()
     {
     }
     uint getOffset(const std::string &requested_ctx_id) const override;
     uint getVariable(uint requested_var_id) const override;
+    uint getMatchEnd(const std::string &requested_ctx) const override;
 
 private:
     const I_KeywordRuntimeState *prev;
     std::string ctx;
     uint offset;
+    uint match_end;
 };
 
 class VariableRuntimeState : public I_KeywordRuntimeState
@@ -111,6 +114,7 @@ public:
 
     uint getOffset(const std::string &requested_ctx_id) const override;
     uint getVariable(uint requested_var_id) const override;
+    uint getMatchEnd(const std::string &requested_ctx) const override;
 
 private:
     const I_KeywordRuntimeState *prev;
@@ -244,6 +248,7 @@ public:
     {
     }
 
+    bool isLast() const { return next == nullptr; }
     MatchStatus runNext(const I_KeywordRuntimeState *curr) const;
     void appendKeyword(std::unique_ptr<SingleKeyword> &&_next);
     virtual MatchStatus isMatch(const I_KeywordRuntimeState *prev) const = 0;

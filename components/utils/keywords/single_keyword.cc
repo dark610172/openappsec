@@ -18,6 +18,15 @@ MatchStatus
 SingleKeyword::runNext(const I_KeywordRuntimeState *curr) const
 {
     if (next==nullptr) {
+        auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
+        auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+        if (boundary.ok()) {
+            auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
+            if (context.ok()) {
+                auto end = curr->getMatchEnd(*context);
+                if (end > 0 && end <= *boundary) return MatchStatus::NoMatch;
+            }
+        }
         return MatchStatus::Match;
     }
     return next->isMatch(curr);
@@ -26,11 +35,13 @@ SingleKeyword::runNext(const I_KeywordRuntimeState *curr) const
 OffsetRuntimeState::OffsetRuntimeState(
     const I_KeywordRuntimeState *_p,
     const string &_ctx,
-    uint _offset)
+    uint _offset,
+    uint _match_end)
         :
     prev(_p),
     ctx(_ctx),
-    offset(_offset)
+    offset(_offset),
+    match_end(_match_end)
 {
 }
 
@@ -39,6 +50,13 @@ OffsetRuntimeState::getOffset(const string &requested_ctx) const
 {
     if (ctx==requested_ctx) return offset;
     return prev->getOffset(requested_ctx);
+}
+
+uint
+OffsetRuntimeState::getMatchEnd(const string &requested_ctx) const
+{
+    auto previous_end = prev->getMatchEnd(requested_ctx);
+    return ctx == requested_ctx ? max(previous_end, match_end) : previous_end;
 }
 
 uint
@@ -62,6 +80,12 @@ uint
 VariableRuntimeState::getOffset(const string &requested_ctx) const
 {
     return prev->getOffset(requested_ctx);
+}
+
+uint
+VariableRuntimeState::getMatchEnd(const string &requested_ctx) const
+{
+    return prev->getMatchEnd(requested_ctx);
 }
 
 uint
