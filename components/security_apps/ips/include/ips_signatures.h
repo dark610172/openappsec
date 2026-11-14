@@ -563,6 +563,9 @@ public:
     /// \return True if the signatures for the context are empty, otherwise false.
     bool isEmpty(const std::string &context) const;
 
+    /// \brief Check whether selected signatures require response inspection.
+    bool hasResponseContexts() const;
+
     /// \brief Get the asset name.
     /// \return The asset name.
     const std::string &
@@ -640,6 +643,9 @@ public:
     /// \param context The name of the context.
     /// \return True if the signatures for the context are empty, otherwise false.
     bool isEmpty(const std::string &context) const;
+
+    /// \brief Check whether selected signatures require response inspection.
+    bool hasResponseContexts() const;
 
     /// \brief Get the asset name.
     /// \return The asset name.

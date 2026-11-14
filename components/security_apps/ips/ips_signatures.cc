@@ -822,6 +822,14 @@ IPSSignatures::isEmpty(const std::string &context) const
     return signatures_per_context.find(context) == signatures_per_context.end();
 }
 
+bool
+IPSSignatures::hasResponseContexts() const
+{
+    const string prefix = "HTTP_RESPONSE_";
+    auto context = signatures_per_context.lower_bound(prefix);
+    return context != signatures_per_context.end() && context->first.compare(0, prefix.size(), prefix) == 0;
+}
+
 void
 SnortSignatures::load(cereal::JSONInputArchive &ar)
 {
@@ -904,4 +912,12 @@ bool
 SnortSignatures::isEmpty(const std::string &context) const
 {
     return signatures_per_context.find(context) == signatures_per_context.end();
+}
+
+bool
+SnortSignatures::hasResponseContexts() const
+{
+    const string prefix = "HTTP_RESPONSE_";
+    auto context = signatures_per_context.lower_bound(prefix);
+    return context != signatures_per_context.end() && context->first.compare(0, prefix.size(), prefix) == 0;
 }

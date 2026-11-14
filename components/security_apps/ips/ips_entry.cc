@@ -19,6 +19,8 @@ static const map<string, IPSConfiguration::Context> default_conf_mapping = {
     { "HTTP_QUERY_DECODED",        IPSConfiguration::Context(IPSConfiguration::ContextType::KEEP, 0) },
     { "HTTP_PROTOCOL",             IPSConfiguration::Context(IPSConfiguration::ContextType::KEEP, 0) },
     { "HTTP_REQUEST_HEADER",       IPSConfiguration::Context(IPSConfiguration::ContextType::KEEP, 0) },
+    // Use the same bounded matching window as body contexts, including header/body boundaries.
+    { "HTTP_RAW",                  IPSConfiguration::Context(IPSConfiguration::ContextType::HISTORY, 1000) },
     { "HTTP_REQUEST_BODY",         IPSConfiguration::Context(IPSConfiguration::ContextType::HISTORY, 1000) },
     { "HTTP_RESPONSE_CODE",        IPSConfiguration::Context(IPSConfiguration::ContextType::KEEP, 0) },
     { "HTTP_RESPONSE_HEADER",      IPSConfiguration::Context(IPSConfiguration::ContextType::KEEP, 0) },

@@ -1,6 +1,7 @@
 #include "ips_comp.h"
 
 #include <algorithm>
+#include <cctype>
 
 #include "debug.h"
 #include "new_table_entry.h"
@@ -155,11 +156,11 @@ public:
     }
 
     static string
-    getHeaderContextName(const Buffer &name)
+    getHeaderContextName(const Buffer &name, const string &prefix)
     {
         string name_str = name;
-        transform(name_str.begin(), name_str.end(), name_str.begin(), ::toupper);
-        return "HTTP_REQUEST_HEADER_" + name_str;
+        transform(name_str.begin(), name_str.end(), name_str.begin(), [](unsigned char ch) { return toupper(ch); });
+        return prefix + name_str;
     }
 
     EventVerdict
@@ -175,7 +176,7 @@ public:
         ips_state.addPendingContext("HTTP_REQUEST_ONE_HEADER", header_value);
         auto full_header = header_value + line_sep;
         ips_state.addPendingContext("HTTP_REQUEST_HEADER", full_header);
-        ips_state.addPendingContext(getHeaderContextName(event.getKey()), event.getValue());
+        ips_state.addPendingContext(getHeaderContextName(event.getKey(), "HTTP_REQUEST_HEADER_"), event.getValue());
         ips_state.addPendingContext("HTTP_RAW", full_header);
 
         auto max_size = getConfigurationWithDefault<uint>(1536, "IPS", "Max Field Size");
@@ -258,8 +259,10 @@ public:
 
         if (isDrop(ips_state)) return DROP;
 
-        if (isContextActive("HTTP_RESPONSE_HEADER")) return INSPECT;
-        if (isContextActive("HTTP_RESPONSE_BODY")) return INSPECT;
+        if (getConfigurationWithDefault(IPSSignatures(), "IPS", "IpsProtections").hasResponseContexts() ||
+            getConfigurationWithDefault(SnortSignatures(), "IPSSnortSigs", "SnortProtections").hasResponseContexts()) {
+            return INSPECT;
+        }
         return ACCEPT;
     }
 
@@ -272,7 +275,7 @@ public:
         ips_state.uponEnteringContext();
         auto leave_context = make_scope_exit([&ips_state] () { ips_state.uponLeavingContext(); });
 
-        Buffer buf(reinterpret_cast<const char *>(&event), sizeof(event), Buffer::MemoryType::VOLATILE);
+        Buffer buf(to_string(event.getResponseCode()));
         if (isDropContext("HTTP_RESPONSE_CODE", buf)) return DROP;
 
         return INSPECT;
@@ -288,6 +291,14 @@ public:
         auto leave_context = make_scope_exit([&ips_state] () { ips_state.uponLeavingContext(); });
 
         if (isDropContext("HTTP_RESPONSE_HEADER", event.getValue())) return DROP;
+
+        auto context = getHeaderContextName(event.getKey(), "HTTP_RESPONSE_HEADER_");
+        if (isDropContext(context, event.getValue())) return DROP;
+        // Snort's response http_cookie buffer uses COOKIE for the Set-Cookie field.
+        if (context == "HTTP_RESPONSE_HEADER_SET-COOKIE" &&
+            isDropContext("HTTP_RESPONSE_HEADER_COOKIE", event.getValue())) {
+            return DROP;
+        }
 
         return INSPECT;
     }
@@ -334,13 +345,6 @@ private:
             if (reponse == ParsedContextReply::DROP) return true;
         }
         return false;
-    }
-
-    static bool
-    isContextActive(const string &context)
-    {
-        return !getConfigurationWithDefault(IPSSignatures(), "IPS", "IpsProtections").isEmpty(context) ||
-            !getConfigurationWithDefault(SnortSignatures(), "IPSSnortSigs", "SnortProtections").isEmpty(context);
     }
 
     static bool

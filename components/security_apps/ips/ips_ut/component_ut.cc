@@ -4,6 +4,8 @@
 
 #include "cptest.h"
 #include "ips_entry.h"
+#include "ips_configuration.h"
+#include "ips_signatures.h"
 #include "new_table_entry.h"
 #include "keyword_comp.h"
 #include "environment.h"
@@ -114,6 +116,326 @@ const EventVerdict ComponentTest::inspect(ServiceVerdict::TRAFFIC_VERDICT_INSPEC
 const EventVerdict ComponentTest::accept(ServiceVerdict::TRAFFIC_VERDICT_ACCEPT);
 
 const EventVerdict ComponentTest::drop(ServiceVerdict::TRAFFIC_VERDICT_DROP);
+
+namespace IPSHelper
+{
+extern bool has_deobfuscation;
+}
+
+// Exercise the same runtime events with each of the two signature sources.
+class IPSRuntimeTest : public ComponentTest, public WithParamInterface<bool>
+{
+public:
+    IPSRuntimeTest() : saved_deobfuscation(IPSHelper::has_deobfuscation)
+    {
+        // Match signatures_ut's plaintext IPS setup without depending on test execution order.
+        IPSHelper::has_deobfuscation = true;
+    }
+
+    ~IPSRuntimeTest()
+    {
+        IPSHelper::has_deobfuscation = saved_deobfuscation;
+    }
+
+    void
+    loadRules(const vector<pair<string, string>> &rules)
+    {
+        string protections;
+        for (const auto &rule : rules) {
+            stringstream detection;
+            {
+                cereal::JSONOutputArchive ar(detection);
+                const string type = "simple";
+                const string ssm;
+                const vector<string> contexts{rule.first};
+                ar(
+                    cereal::make_nvp("type", type),
+                    cereal::make_nvp("SSM", ssm),
+                    cereal::make_nvp("keywords", rule.second),
+                    cereal::make_nvp("context", contexts)
+                );
+            }
+            if (!protections.empty()) protections += ",";
+            protections += R"({
+                "protectionMetadata": {
+                    "protectionName": "Runtime regression",
+                    "maintrainId": "101",
+                    "severity": "Low",
+                    "confidenceLevel": "Low",
+                    "performanceImpact": "Medium High",
+                    "lastUpdate": "20210420",
+                    "tags": [],
+                    "cveList": []
+                },
+                "detectionRules": )" + detection.str() + "}";
+        }
+
+        if (GetParam()) {
+            stringstream resource_json(
+                R"([{"modificationTime":"22/02/08","name":"runtime.rules","protections":[)" +
+                protections + "]}]"
+            );
+            cereal::JSONInputArchive resource_ar(resource_json);
+            SnortSignaturesResource resource;
+            resource.load(resource_ar);
+            ASSERT_EQ(resource.getSignatures("runtime.rules").size(), rules.size());
+            setResource(resource, "IPSSnortSigs", "protections");
+
+            stringstream policy_json(R"({
+                "assetName": "asset1", "assetId": "1-1-1",
+                "practiceName": "practice1", "practiceId": "2-2-2",
+                "files": ["runtime.rules"], "mode": "Prevent"
+            })");
+            cereal::JSONInputArchive policy_ar(policy_json);
+            SnortSignatures signatures;
+            signatures.load(policy_ar);
+            ASSERT_FALSE(signatures.isEmpty());
+            setConfiguration(signatures, "IPSSnortSigs", "SnortProtections");
+        } else {
+            stringstream resource_json("[" + protections + "]");
+            cereal::JSONInputArchive resource_ar(resource_json);
+            IPSSignaturesResource resource;
+            resource.load(resource_ar);
+            ASSERT_EQ(resource.getSignatures().size(), rules.size());
+            setResource(resource, "IPS", "protections");
+
+            stringstream policy_json(R"({
+                "assetName": "asset1", "assetId": "1-1-1",
+                "practiceName": "practice1", "practiceId": "2-2-2",
+                "defaultAction": "Prevent", "rules": []
+            })");
+            cereal::JSONInputArchive policy_ar(policy_json);
+            IPSSignatures signatures;
+            signatures.load(policy_ar);
+            ASSERT_FALSE(signatures.isEmpty());
+            setConfiguration(signatures, "IPS", "IpsProtections");
+        }
+    }
+
+    void
+    startRequest()
+    {
+        EXPECT_CALL(table, createStateRValueRemoved(_, _));
+        EXPECT_CALL(table, getState(_)).WillRepeatedly(Return(&entry));
+        EXPECT_CALL(table, hasState(_)).WillRepeatedly(Return(true));
+
+        HttpTransactionData transaction(
+            "HTTP/1.1", "POST", "example.test",
+            IPAddr::createIPAddr("0.0.0.0").unpack(), 80, "/",
+            IPAddr::createIPAddr("1.1.1.1").unpack(), 5428
+        );
+        EXPECT_THAT(NewHttpTransactionEvent(transaction).query(), ElementsAre(inspect));
+    }
+
+    void
+    checkNamedResponseHeader(const string &context, const string &field)
+    {
+        // The general rule keeps the old EndRequest path inspecting, isolating D02 from D01.
+        loadRules({{context, "data: \"D2MARKER\";"}, {"HTTP_RESPONSE_HEADER", "data: \"NEVER_MATCH\";"}});
+        startRequest();
+        EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+        EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+        EXPECT_EQ(entry.respond(ParsedContext(Buffer("D2MARKER"), context, 0)), ParsedContextReply::DROP);
+
+        HttpHeader unrelated(Buffer("X-Other"), Buffer("D2MARKER"), 0, false);
+        EXPECT_THAT(HttpResponseHeaderEvent(unrelated).query(), ElementsAre(inspect));
+        HttpHeader clean(Buffer(field), Buffer("clean"), 1, false);
+        EXPECT_THAT(HttpResponseHeaderEvent(clean).query(), ElementsAre(inspect));
+        HttpHeader matching(Buffer(field), Buffer("D2MARKER"), 2, true);
+        EXPECT_THAT(HttpResponseHeaderEvent(matching).query(), ElementsAre(drop));
+    }
+
+private:
+    const bool saved_deobfuscation;
+};
+
+INSTANTIATE_TEST_CASE_P(SignatureSources, IPSRuntimeTest, Values(false, true));
+
+TEST_P(IPSRuntimeTest, response_code_only_stays_inspecting_at_end_request)
+{
+    loadRules({{"HTTP_RESPONSE_CODE", "data: \"403\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+}
+
+TEST_P(IPSRuntimeTest, named_response_header_only_stays_inspecting_at_end_request)
+{
+    loadRules({{"HTTP_RESPONSE_HEADER_SET-COOKIE", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+}
+
+TEST_P(IPSRuntimeTest, response_cookie_only_stays_inspecting_at_end_request)
+{
+    loadRules({{"HTTP_RESPONSE_HEADER_COOKIE", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+}
+
+TEST_P(IPSRuntimeTest, request_only_rule_still_accepts_at_end_request)
+{
+    loadRules({{"HTTP_REQUEST_HEADER_X-AUDIT", "data: \"D2MARKER\";"}});
+    startRequest();
+    HttpHeader header(Buffer("x-AuDiT"), Buffer("clean"), 0, true);
+    EXPECT_THAT(HttpRequestHeaderEvent(header).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+}
+
+TEST_P(IPSRuntimeTest, named_request_header_still_drops)
+{
+    loadRules({{"HTTP_REQUEST_HEADER_X-AUDIT", "data: \"D2MARKER\";"}});
+    startRequest();
+    HttpHeader header(Buffer("x-AuDiT"), Buffer("D2MARKER"), 0, true);
+    EXPECT_THAT(HttpRequestHeaderEvent(header).query(), ElementsAre(drop));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, named_response_header_receives_value)
+{
+    checkNamedResponseHeader("HTTP_RESPONSE_HEADER_X-AUDIT", "x-AuDiT");
+}
+
+TEST_P(IPSRuntimeTest, named_set_cookie_receives_value)
+{
+    checkNamedResponseHeader("HTTP_RESPONSE_HEADER_SET-COOKIE", "sEt-CoOkIe");
+}
+
+TEST_P(IPSRuntimeTest, snort_response_cookie_receives_set_cookie_value)
+{
+    checkNamedResponseHeader("HTTP_RESPONSE_HEADER_COOKIE", "sEt-CoOkIe");
+}
+
+TEST_P(IPSRuntimeTest, general_response_header_still_drops)
+{
+    loadRules({{"HTTP_RESPONSE_HEADER", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+    HttpHeader header(Buffer("X-Audit"), Buffer("D2MARKER"), 0, true);
+    EXPECT_THAT(HttpResponseHeaderEvent(header).query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_content_in_one_body_chunk_drops)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody body(Buffer("D2MARKER"), true, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(body, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_content_across_body_chunks_drops)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody first(Buffer("D2"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_FALSE(entry.isDrop());
+    HttpBody last(Buffer("MARKER"), true, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_content_across_header_and_body_drops)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2|0d 0a|MARKER\";"}});
+    startRequest();
+    HttpHeader header(Buffer("X-Audit"), Buffer("D2"), 0, true);
+    EXPECT_THAT(HttpRequestHeaderEvent(header).query(), ElementsAre(inspect));
+    EXPECT_FALSE(entry.isDrop());
+    HttpBody body(Buffer("MARKER"), true, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(body, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_history_is_bounded_and_preserves_tail)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2MARKER\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody first(Buffer(string(1200, 'x') + "D2"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_FALSE(entry.isDrop());
+    EXPECT_EQ(entry.getBuffer("HTTP_RAW"), Buffer(string(998, 'x') + "D2"));
+    HttpBody last(Buffer("MARKER"), true, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(entry.getBuffer("HTTP_RAW").size(), 1000u);
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_relative_offsets_share_the_history_window)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2\"; data: \"MARKER\", relative, depth 6;"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody first(Buffer("D2"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_FALSE(entry.isDrop());
+    HttpBody last(Buffer("MARKER"), true, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, explicit_raw_normal_configuration_is_preserved)
+{
+    loadRules({{"HTTP_RAW", "data: \"D2MARKER\";"}});
+    setConfiguration(
+        IPSConfiguration({{"HTTP_RAW", IPSConfiguration::Context(IPSConfiguration::ContextType::NORMAL, 0)}}),
+        "IPS", "IpsConfigurations"
+    );
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody first(Buffer("D2"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    HttpBody last(Buffer("MARKER"), true, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+}
+
+TEST_P(IPSRuntimeTest, response_code_rule_matches_decimal_status)
+{
+    // Keep the original EndRequest inspecting so this checks D04 independently of D01.
+    loadRules({{"HTTP_RESPONSE_CODE", "data: \"403\";"}, {"HTTP_RESPONSE_HEADER", "data: \"NEVER_MATCH\";"}});
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(inspect));
+    EXPECT_THAT(ResponseCodeEvent(200).query(), ElementsAre(inspect));
+    EXPECT_THAT(ResponseCodeEvent(403).query(), ElementsAre(drop));
+}
+
+class ResponseCodeContextCapture : public Listener<ParsedContext>
+{
+public:
+    ResponseCodeContextCapture() { registerListener(); }
+    ~ResponseCodeContextCapture() { unregisterListener(); }
+
+    void upon(const ParsedContext &) override {}
+    string getListenerName() const override { return "response code capture"; }
+
+    ParsedContextReply
+    respond(const ParsedContext &context) override
+    {
+        if (context.getName() == "HTTP_RESPONSE_CODE") values.push_back(context.getBuffer());
+        return ParsedContextReply::ACCEPT;
+    }
+
+    vector<Buffer> values;
+};
+
+TEST_F(ComponentTest, response_code_context_contains_only_decimal_text)
+{
+    EXPECT_CALL(table, hasState(_)).WillRepeatedly(Return(true));
+    EXPECT_CALL(table, getState(_)).WillRepeatedly(Return(&entry));
+    ResponseCodeContextCapture capture;
+    EXPECT_THAT(ResponseCodeEvent(403).query(), ElementsAre(inspect));
+    EXPECT_THAT(ResponseCodeEvent(200).query(), ElementsAre(inspect));
+    EXPECT_THAT(capture.values, ElementsAre(Buffer("403"), Buffer("200")));
+}
 
 TEST_F(ComponentTest, check_init_fini_do_not_crush)
 {
