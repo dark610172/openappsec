@@ -95,8 +95,11 @@ createRangeFromCidrV4(const pair<string, int> &cidr_values)
         address.erase(0, delimiter_pos + 1);
     }
 
-    unsigned int mask = 0xffffffff;
-    mask <<= (32 - mask_size);
+    if (mask_size < 0 || mask_size > 32) {
+        return genError("provided IPv4 mask size is out of range (0-32): " + to_string(mask_size));
+    }
+    // Shifting a 32 bit value by 32 is undefined, so /0 (any address) is handled explicitly.
+    unsigned int mask = mask_size == 0 ? 0 : (0xffffffffu << (32 - mask_size));
 
     unsigned int start, end;
     tie(start, end) = applyMaskOnAddress<unsigned int>(oct, mask);
@@ -134,6 +137,9 @@ createRangeFromCidrV6(const pair<string, int> &cidr_values)
         oct_from_str.push_back(num);
     }
 
+    if (mask_size < 0 || mask_size > 128) {
+        return genError("provided IPv6 mask size is out of range (0-128): " + to_string(mask_size));
+    }
     uint64_t mask = 0xffffffffffffffff;
     function<string(uint64_t, bool)> construct_address;
     int oct_offset;
@@ -155,7 +161,8 @@ createRangeFromCidrV6(const pair<string, int> &cidr_values)
         };
     } else {
         oct_offset = 3;
-        mask <<= (64 - mask_size);
+        // Shifting a 64 bit value by 64 is undefined, so /0 is handled explicitly.
+        mask = mask_size == 0 ? 0 : (mask << (64 - mask_size));
         construct_address = [](uint64_t value, bool is_start)
         {
             stringstream address_stream;
