@@ -100,6 +100,10 @@ TEST_P(DeclarativePolicyRetryTest, RetriesSameContentAfterFailureAndCommitsOnlyS
     EXPECT_TRUE(policy.getUpdate(request).empty());
     EXPECT_TRUE(policy.getCurrPolicy().empty());
     EXPECT_TRUE(policy.shouldApplyPolicy());
+
+    // Model the clear performed by a successful settings/data-only service reload.
+    policy.turnOffApplyLocalPolicyFlag();
+    ASSERT_TRUE(policy.shouldApplyPolicy());
     Mock::VerifyAndClearExpectations(&tools);
 
     // Restore the source expectation after clearing the forbidden output-checksum call.
@@ -116,6 +120,10 @@ TEST_P(DeclarativePolicyRetryTest, RetriesSameContentAfterFailureAndCommitsOnlyS
     // The source content/checksum and request are identical to the first call.
     EXPECT_EQ("new-output-checksum", policy.getUpdate(request));
     EXPECT_EQ("generated-policy", policy.getCurrPolicy());
+    // A successful generation restores the normal service-reload clear behavior.
+    if (GetParam() == EnvType::LINUX) EXPECT_TRUE(policy.shouldApplyPolicy());
+    policy.turnOffApplyLocalPolicyFlag();
+    EXPECT_FALSE(policy.shouldApplyPolicy());
     CheckUpdateRequest applied("", "new-output-checksum", "", "", "", "");
     EXPECT_TRUE(policy.getUpdate(applied).empty());
     EXPECT_EQ("generated-policy", policy.getCurrPolicy());
@@ -142,10 +150,16 @@ TEST_P(DeclarativePolicyRetryTest, KeepsPreviousPolicyAndRetriesFailedReplacemen
     EXPECT_EQ("previous-policy", policy.getCurrPolicy());
     EXPECT_TRUE(policy.shouldApplyPolicy());
 
+    // An unrelated service reload must preserve the failed replacement's retry.
+    policy.turnOffApplyLocalPolicyFlag();
+    ASSERT_TRUE(policy.shouldApplyPolicy());
+
     EXPECT_CALL(tools, calculateChecksum(_, "/tmp/local_appsec.policy"))
         .WillOnce(Return(string("replacement-output-checksum")));
     EXPECT_EQ("replacement-output-checksum", policy.getUpdate(request));
     EXPECT_EQ("replacement-policy", policy.getCurrPolicy());
+    policy.turnOffApplyLocalPolicyFlag();
+    EXPECT_FALSE(policy.shouldApplyPolicy());
 }
 
 INSTANTIATE_TEST_CASE_P(LinuxAndK8s, DeclarativePolicyRetryTest, Values(EnvType::LINUX, EnvType::K8S));

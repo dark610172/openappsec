@@ -59,6 +59,8 @@ DeclarativePolicyUtils::shouldApplyPolicy()
 void
 DeclarativePolicyUtils::turnOffApplyLocalPolicyFlag()
 {
+    // Settings/data reloads must not cancel a failed policy generation's retry.
+    if (policy_generation_failed) return;
     should_apply_local_policy = false;
 }
 
@@ -114,10 +116,12 @@ DeclarativePolicyUtils::updateCurrentPolicy(const string &policy_checksum)
 
     if (maybe_policy.empty()) {
         dbgWarning(D_ORCHESTRATOR) << "Could not generate appsec local policy";
+        policy_generation_failed = true;
         return false;
     }
 
     curr_policy = maybe_policy;
+    policy_generation_failed = false;
     return true;
 }
 

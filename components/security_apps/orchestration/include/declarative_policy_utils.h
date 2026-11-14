@@ -95,6 +95,7 @@ private:
     std::string curr_policy;
     std::string curr_checksum;
     bool should_apply_local_policy;
+    bool policy_generation_failed = false;
 };
 
 #endif // __DECLARATIVE_POLICY_UTILS_H__
