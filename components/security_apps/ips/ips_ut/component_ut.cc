@@ -618,6 +618,39 @@ TEST_P(IPSRuntimeTest, raw_fresh_split_ssm_completes_old_keyword_without_clean_c
     EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
 }
 
+TEST_P(IPSRuntimeTest, raw_shared_ssm_freshness_reaches_each_keyword_rule_without_replay)
+{
+    loadRules({
+        {"HTTP_RAW", "data: \"POST\", caret;"},
+        {"HTTP_RAW", "pcre: \"/POST/\";"},
+        {"HTTP_RAW", "data: \"BAD\", caret;"}
+    }, "Detect", "ATTACK");
+    setTrigger();
+    RawMatchCapture capture;
+    EXPECT_CALL(logs, sendLog(_)).Times(4);
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_TRUE(capture.actions.empty());
+    HttpBody first(Buffer("ATTACK ATTACK ATTACK AT"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 2u);
+    HttpBody clean(Buffer("x"), false, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(clean, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 2u);
+    HttpBody prefix(Buffer("AT"), false, 2);
+    EXPECT_THAT(HttpRequestBodyEvent(prefix, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 2u);
+    // The fourth occurrence crosses chunks; every signature sharing ATTACK must see it.
+    HttpBody suffix(Buffer("TACK"), false, 3);
+    EXPECT_THAT(HttpRequestBodyEvent(suffix, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 4u);
+    HttpBody last(Buffer("x"), true, 4);
+    EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 4u);
+    EXPECT_THAT(capture.actions, Each(IPSSignatureSubTypes::SignatureAction::DETECT));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+}
+
 TEST_P(IPSRuntimeTest, raw_zero_width_pcre_conservatively_allows_replay)
 {
     checkRawZeroWidthReplay("pcre: \"/(?=POST)/\";");

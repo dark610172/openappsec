@@ -324,6 +324,31 @@ TEST_F(SnortConversionTest, KeepsConvertedRulesWhenSomeRulesHitInternalErrors)
     EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
 }
 
+TEST_F(SnortConversionTest, RejectsZeroSignaturesWithInternalErrorsWithoutInputRules)
+{
+    converter_errors = R"({"Errors":[],"InternalErrors":[{"Error":"unexpected exception","Line":1}]})";
+    expectConversion("custom.rules", "'custom.rules'", "custom.rules");
+    expectConvertedOutput();
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate("custom.rules", output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_THAT(debug_output.str(), HasSubstr("internal errors: 1"));
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
+TEST_F(SnortConversionTest, RejectsZeroSignaturesWithErrorsWithoutInputRules)
+{
+    converter_errors = R"({"Errors":[{"Error":"unsupported protocol","Line":1}]})";
+    expectConversion("custom.rules", "'custom.rules'", "custom.rules");
+    expectConvertedOutput();
+    CPTestTempfile output({"previous policy"});
+    string previous = output.readFile();
+    EXPECT_TRUE(generate("custom.rules", output.fname).empty());
+    EXPECT_EQ(previous, output.readFile());
+    EXPECT_EQ((vector<string>{tmp_out, tmp_err}), removed_paths);
+}
+
 TEST_F(SnortConversionTest, RejectsZeroSignaturesWithReportedInputRulesForRelativePath)
 {
     CPTestTempfile input;

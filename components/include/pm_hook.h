@@ -31,6 +31,12 @@ public:
 
     Maybe<void> prepare(const std::set<PMPattern> &patterns);
     std::set<PMPattern> scanBuf(const Buffer &buf) const override;
+    // Collect all matches and those ending at or after new_data_offset in one scan.
+    std::set<PMPattern> scanBufWithFreshMatches(
+        const Buffer &buf,
+        uint new_data_offset,
+        std::set<PMPattern> &fresh_matches
+    ) const;
     std::set<std::pair<uint, uint>> scanBufWithOffset(const Buffer &buf) const override;
     void scanBufWithOffsetLambda(const Buffer &buf, I_PMScan::CBFunction cb) const override;
 

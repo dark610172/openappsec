@@ -64,13 +64,21 @@ SimpleProtection::Impl::getMatch(const set<PMPattern> &matches) const
     auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
     bool fresh_ssm = false;
     if (raw_pattern_matcher && boundary.ok()) {
-        auto buffer = env->get<Buffer>("HTTP_RAW");
-        if (!buffer.ok()) return MatchType::NO_MATCH;
-        for (const auto &match : raw_pattern_matcher->scanBufWithOffset(*buffer)) {
-            // PM offsets identify the last matched byte (inclusive).
-            if (match.second >= *boundary) {
-                fresh_ssm = true;
-                break;
+        auto shared_matches = env->get<shared_ptr<const set<PMPattern>>>(
+            IPSSignaturesPerContext::getFreshMatchesTag()
+        );
+        if (shared_matches.ok()) {
+            fresh_ssm = (*shared_matches)->count(pattern) != 0;
+        } else {
+            // Direct signature evaluations may run without the shared first-tier scan.
+            auto buffer = env->get<Buffer>("HTTP_RAW");
+            if (!buffer.ok()) return MatchType::NO_MATCH;
+            for (const auto &match : raw_pattern_matcher->scanBufWithOffset(*buffer)) {
+                // PM offsets identify the last matched byte (inclusive).
+                if (match.second >= *boundary) {
+                    fresh_ssm = true;
+                    break;
+                }
             }
         }
         if (!rule) return fresh_ssm ? MatchType::MATCH : MatchType::NO_MATCH;

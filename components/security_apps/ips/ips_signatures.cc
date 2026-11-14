@@ -15,6 +15,7 @@
 #include "ips_entry.h"
 #include "ips_metric.h"
 #include "ips_common_types.h"
+#include "i_keywords_rule.h"
 
 USE_DEBUG_FLAG(D_IPS);
 
@@ -714,16 +715,24 @@ IPSSignaturesPerContext::calcFirstTier(const string &ctx_name)
     first_tier = Singleton::Consume<I_FirstTierAgg>::by<IPSSignaturesPerContext>()->getHook(ctx_name, patterns);
 }
 
-set<PMPattern>
-IPSSignaturesPerContext::getFirstTierMatches(const Buffer &buffer) const
-{
-    return first_tier->ok() ? first_tier->scanBuf(buffer) : set<PMPattern>();
-}
-
 bool
 IPSSignaturesPerContext::isMatchedPrevent(const Buffer &context_buffer) const
 {
-    auto first_tier_res = getFirstTierMatches(context_buffer);
+    auto env = Singleton::Consume<I_Environment>::by<IPSComp>();
+    auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
+    auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    set<PMPattern> first_tier_res;
+    ScopedContext scan_context;
+    if (context.ok() && *context == "HTTP_RAW" && boundary.ok()) {
+        auto fresh_matches = make_shared<set<PMPattern>>();
+        if (first_tier->ok()) {
+            first_tier_res = first_tier->scanBufWithFreshMatches(context_buffer, *boundary, *fresh_matches);
+        }
+        // Share the immutable result without copying the pattern set for every signature.
+        scan_context.registerValue<shared_ptr<const set<PMPattern>>>(getFreshMatchesTag(), fresh_matches);
+    } else if (first_tier->ok()) {
+        first_tier_res = first_tier->scanBuf(context_buffer);
+    }
 
     for (auto &pat : first_tier_res) {
         auto find = signatures_per_lss.find(pat);

@@ -118,6 +118,24 @@ PMHook::scanBuf(const Buffer &buf) const
     return res;
 }
 
+set<PMPattern>
+PMHook::scanBufWithFreshMatches(const Buffer &buf, uint new_data_offset, set<PMPattern> &fresh_matches) const
+{
+    dbgAssert(handle != nullptr) << AlertInfo(AlertTeam::CORE, "pattern matcher") << "Unusable Pattern Matcher";
+    vector<pair<uint, uint>> pm_matches;
+    kiss_thin_nfa_exec(handle.get(), buf, pm_matches);
+
+    set<PMPattern> res;
+    fresh_matches.clear();
+    for (const auto &match : pm_matches) {
+        const auto &pattern = patterns.at(match.first);
+        res.insert(pattern);
+        // PM offsets identify the last matched byte (inclusive).
+        if (match.second >= new_data_offset) fresh_matches.insert(pattern);
+    }
+    return res;
+}
+
 set<pair<uint, uint>>
 PMHook::scanBufWithOffset(const Buffer &buf) const
 {

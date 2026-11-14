@@ -446,11 +446,14 @@ public:
     /// \param ctx_name The context name.
     void calcFirstTier(const std::string &ctx_name);
 
-private:
-    /// \brief Get the first tier matches for the buffer.
-    /// \param buffer The buffer to match.
-    std::set<PMPattern> getFirstTierMatches(const Buffer &buffer) const;
+    static const std::string &
+    getFreshMatchesTag()
+    {
+        static const std::string tag = "ips_first_tier_fresh_matches";
+        return tag;
+    }
 
+private:
     std::map<PMPattern, std::vector<IPSSignatureSubTypes::SignatureAndAction>> signatures_per_lss;
     std::vector<IPSSignatureSubTypes::SignatureAndAction> signatures_without_lss;
     std::shared_ptr<PMHook> first_tier;

@@ -1167,7 +1167,8 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
             has_rules = errors["InputRules"].GetUint64() != 0;
         } else {
             dbgWarning(D_LOCAL_POLICY) << "Snort conversion input rule count is unknown: " << tmp_err
-                << ". Missing or invalid InputRules; skipping empty signature package check";
+                << ". Missing or invalid InputRules; skipping empty signature package check"
+                << " when no errors are reported";
         }
         size_t failed_rules = 0;
         size_t internal_errors = 0;
@@ -1193,6 +1194,8 @@ PolicyMakerUtils::createSnortProtecionsSection(const string &file_name, bool is_
             }
         }
         if (failed_rules != 0) {
+            // Rejected rules also prove input existed when older converters omit InputRules.
+            has_rules = true;
             dbgWarning(D_LOCAL_POLICY) << "Snort conversion failed for " << failed_rules
                 << " rules (internal errors: " << internal_errors << "). Error file: " << tmp_err
                 << ". First errors:" << preview.str();

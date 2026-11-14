@@ -280,6 +280,25 @@ TEST(pm_scan, scan_with_offsets)
     EXPECT_THAT(pm.scanBufWithOffset(buf3), ContainerEq(res));
 }
 
+TEST(pm_scan, shared_fresh_matches_preserve_all_patterns_and_check_every_occurrence)
+{
+    auto patterns = getPatternSet("POST", "ATTACK");
+    PMHook pm;
+    ASSERT_TRUE(pm.prepare(patterns).ok());
+    Buffer buffer = Buffer("POST ATTACK ATTACK ATTACK AT") + Buffer("TACK");
+    set<PMPattern> fresh_matches;
+    EXPECT_EQ(pm.scanBufWithFreshMatches(buffer, 0, fresh_matches), patterns);
+    EXPECT_EQ(fresh_matches, patterns);
+    // Only the fourth ATTACK ends in new data, exactly at the inclusive PM boundary.
+    EXPECT_EQ(pm.scanBufWithFreshMatches(buffer, buffer.size() - 1, fresh_matches), patterns);
+    EXPECT_EQ(fresh_matches, getPatternSet("ATTACK"));
+    EXPECT_EQ(pm.scanBufWithFreshMatches(buffer, buffer.size(), fresh_matches), patterns);
+    EXPECT_TRUE(fresh_matches.empty());
+    fresh_matches = patterns;
+    EXPECT_TRUE(pm.scanBufWithFreshMatches(Buffer(""), 0, fresh_matches).empty());
+    EXPECT_TRUE(fresh_matches.empty());
+}
+
 TEST(pm_scan, null_buf)
 {
     set<PMPattern> pats;
