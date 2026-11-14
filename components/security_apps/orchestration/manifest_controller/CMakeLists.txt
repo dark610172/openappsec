@@ -1,3 +1,4 @@
 add_library(manifest_controller manifest_controller.cc manifest_diff_calculator.cc manifest_handler.cc)
 
 #add_subdirectory(manifest_controller_ut)
+add_subdirectory(manifest_diff_calculator_ut)

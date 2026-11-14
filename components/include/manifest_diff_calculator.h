@@ -44,12 +44,15 @@ public:
 
 
 private:
+    enum class VisitState { Visiting, Done };
+
     Maybe<void>
     buildRecInstallationQueue(
         const Package &package,
         std::vector<Package> &installation_queue,
         const std::map<std::string, Package> &current_packages,
-        const std::map<std::string, Package> &new_packages
+        const std::map<std::string, Package> &new_packages,
+        std::map<std::string, VisitState> &visit_states
     );
 
     std::string corrupted_file_path;

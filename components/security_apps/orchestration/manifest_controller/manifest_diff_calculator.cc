@@ -113,34 +113,46 @@ ManifestDiffCalculator::buildRecInstallationQueue(
     const Package &package,
     vector<Package> &installation_queue,
     const map<string, Package> &current_packages,
-    const map<string, Package> &new_packages)
+    const map<string, Package> &new_packages,
+    map<string, VisitState> &visit_states)
 {
+    auto state = visit_states.find(package.getName());
+    if (state != visit_states.end()) {
+        if (state->second == VisitState::Done) return Maybe<void>();
+        return genError("Dependency cycle detected. Package: " + package.getName());
+    }
+    visit_states.emplace(package.getName(), VisitState::Visiting);
+
     const vector<string> &requires_packages = package.getRequire();
 
     for (const auto &require : requires_packages) {
         auto installed_package = current_packages.find(require);
         auto new_package = new_packages.find(require);
 
-        if (installed_package == current_packages.end() ||
-            (new_package != new_packages.end() && *installed_package != *new_package)) {
-                auto rec_res = buildRecInstallationQueue(
-                    new_package->second,
-                    installation_queue,
-                    current_packages,
-                    new_packages
-                );
-                if (!rec_res.ok()) return rec_res.passErr();
-            } else if (installed_package != current_packages.end()) {
-                dbgDebug(D_ORCHESTRATOR) << "Package is already in the queue. Package: " << installed_package->first;
-            } else if (new_package == new_packages.end()) {
-                return genError(
-                    "One of the requested dependencies is corrupted or doesn't exist. Package: " + require
-                );
-            }
+        if (installed_package != current_packages.end() &&
+            (new_package == new_packages.end() || *installed_package == *new_package)) {
+            dbgDebug(D_ORCHESTRATOR) << "Package is already in the queue. Package: " << installed_package->first;
+            continue;
+        }
+        if (new_package == new_packages.end()) {
+            return genError(
+                "One of the requested dependencies is corrupted or doesn't exist. Package: " + require
+            );
+        }
+
+        auto rec_res = buildRecInstallationQueue(
+            new_package->second,
+            installation_queue,
+            current_packages,
+            new_packages,
+            visit_states
+        );
+        if (!rec_res.ok()) return rec_res.passErr();
     }
     if (find(installation_queue.begin(), installation_queue.end(), package) == installation_queue.end()) {
         installation_queue.push_back(package);
     }
+    visit_states[package.getName()] = VisitState::Done;
     return Maybe<void>();
 }
 
@@ -153,6 +165,7 @@ ManifestDiffCalculator::buildInstallationQueue(
 {
     vector<Package> installation_queue;
     installation_queue.reserve(new_packages.size());
+    map<string, VisitState> visit_states;
     auto orchestration_it = new_packages.find("orchestration");
     if (orchestration_it != new_packages.end()) {
         installation_queue.push_back(orchestration_it->second);
@@ -174,7 +187,8 @@ ManifestDiffCalculator::buildInstallationQueue(
             package_pair.second,
             installation_queue,
             current_packages,
-            new_packages
+            new_packages,
+            visit_states
         );
         if (!build_queue_res.ok()) return build_queue_res.passErr();
     }
