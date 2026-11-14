@@ -14,6 +14,9 @@
 #include "ParserGzip.h"
 #include "debug.h"
 
+#include <cstdlib>
+#include <memory>
+
 USE_DEBUG_FLAG(D_WAAP_PARSER_GZIP);
 
 const std::string ParserGzip::m_parserName = "ParserGzip";
@@ -44,7 +47,6 @@ size_t ParserGzip::push(const char *buf, size_t len) {
 
         return 0;
     }
-    DecompressionResult res;
     switch (m_state) {
     case s_start:
         dbgTrace(D_WAAP_PARSER_GZIP) << "s_start";
@@ -56,13 +58,14 @@ size_t ParserGzip::push(const char *buf, size_t len) {
         m_state = s_forward;
         // fallthrough //
         CP_FALL_THROUGH;
-    case s_forward:
+    case s_forward: {
         dbgTrace(D_WAAP_PARSER_GZIP) << "s_forward";
-        res = decompressDataSafe(
+        auto res = decompressDataSafe(
             m_stream,
             CompressionType::GZIP,
             len,
             reinterpret_cast<const unsigned char *>(buf));
+        std::unique_ptr<unsigned char, decltype(&std::free)> output(res.output, &std::free);
         dbgTrace(D_WAAP_PARSER_GZIP) << "res: " << res.ok
             << ", size: " << res.num_output_bytes
             << ", is last: " << res.is_last_chunk;
@@ -73,7 +76,7 @@ size_t ParserGzip::push(const char *buf, size_t len) {
         }
 
         if (res.num_output_bytes != 0 &&
-                m_receiver.onValue(reinterpret_cast<const char *>(res.output), res.num_output_bytes) != 0) {
+                m_receiver.onValue(reinterpret_cast<const char *>(output.get()), res.num_output_bytes) != 0) {
             m_state = s_error;
             break;
         }
@@ -83,6 +86,7 @@ size_t ParserGzip::push(const char *buf, size_t len) {
             break;
         }
         break;
+    }
     case s_done:
         if (len > 0) {
             dbgTrace(D_WAAP_PARSER_GZIP) << " unexpected data after completion, len=" << len;
