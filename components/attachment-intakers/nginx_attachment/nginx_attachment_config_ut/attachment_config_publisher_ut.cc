@@ -56,8 +56,6 @@ protected:
     bool
     publish(const TestConfig &candidate)
     {
-        const TestConfig previous = committed;
-        const unsigned int previous_elements = ipc_elements;
         const int previous_reconfs = reconfs;
         return publisher.publish(
             candidate,
@@ -66,13 +64,11 @@ protected:
             [&]()
             {
                 ++writes;
-                // The old state must remain visible throughout the real file write.
-                EXPECT_TRUE(committed == previous);
-                EXPECT_EQ(previous_elements, ipc_elements);
+                // The config follows the candidate at once, but nobody is notified before the write succeeds.
+                EXPECT_TRUE(committed == candidate);
+                EXPECT_EQ(candidate.elements, ipc_elements);
                 EXPECT_EQ(previous_reconfs, reconfs);
                 bool result = writeAttachmentSettings(path, candidate.content);
-                EXPECT_TRUE(committed == previous);
-                EXPECT_EQ(previous_elements, ipc_elements);
                 EXPECT_EQ(previous_reconfs, reconfs);
                 return result;
             },
@@ -102,9 +98,8 @@ TEST_F(AttachmentConfigPublisherTest, IdenticalConfigRetriesAfterOpenFailure)
     // A missing parent makes open fail even when the tests run as root.
     EXPECT_FALSE(publish(candidate));
     EXPECT_EQ(1, writes);
-    EXPECT_EQ("old settings", committed.content);
-    EXPECT_EQ(8u, committed.elements);
-    EXPECT_EQ(8u, ipc_elements);
+    EXPECT_TRUE(committed == candidate);
+    EXPECT_EQ(16u, ipc_elements);
     EXPECT_EQ(0, reconfs);
     EXPECT_NE(0, access(path.c_str(), F_OK));
 
@@ -134,7 +129,7 @@ TEST_F(AttachmentConfigPublisherTest, EqualConfigMustBePublishedBeforeNotificati
     EXPECT_EQ(1, reconfs);
 }
 
-TEST_F(AttachmentConfigPublisherTest, FailedReplacementKeepsPreviousCommitAndRetries)
+TEST_F(AttachmentConfigPublisherTest, FailedReplacementRetriesIdenticalConfig)
 {
     ASSERT_EQ(0, mkdir(parent.c_str(), 0700));
     const TestConfig previous = committed;
@@ -144,8 +139,8 @@ TEST_F(AttachmentConfigPublisherTest, FailedReplacementKeepsPreviousCommitAndRet
 
     const TestConfig candidate = {"replacement settings", 32};
     EXPECT_FALSE(publish(candidate));
-    EXPECT_TRUE(committed == previous);
-    EXPECT_EQ(8u, ipc_elements);
+    EXPECT_TRUE(committed == candidate);
+    EXPECT_EQ(32u, ipc_elements);
     EXPECT_EQ(1, reconfs);
     ASSERT_EQ(0, mkdir(parent.c_str(), 0700));
     EXPECT_TRUE(publish(candidate));
@@ -172,21 +167,20 @@ TEST_F(AttachmentConfigPublisherTest, RevertingAfterFailedReplacementRewritesMis
     EXPECT_EQ(previous.content, readSettings());
 }
 
-TEST_F(AttachmentConfigPublisherTest, BufferedWriteFailureDoesNotCommitOrNotify)
+TEST_F(AttachmentConfigPublisherTest, BufferedWriteFailureDoesNotNotifyAndRetries)
 {
     // /dev/full opens successfully but rejects writes, including a buffered flush at close.
     ofstream full_device("/dev/full");
     ASSERT_TRUE(full_device.is_open());
     full_device.close();
     ASSERT_FALSE(full_device.fail());
-    const TestConfig previous = committed;
     const TestConfig candidate = {"small settings", 16};
     EXPECT_FALSE(publisher.publish(candidate, committed, ipc_elements,
         [&]() { return writeAttachmentSettings("/dev/full", candidate.content); },
         [&]() { ++reconfs; }
     ));
-    EXPECT_TRUE(committed == previous);
-    EXPECT_EQ(8u, ipc_elements);
+    EXPECT_TRUE(committed == candidate);
+    EXPECT_EQ(16u, ipc_elements);
     EXPECT_EQ(0, reconfs);
     ASSERT_EQ(0, mkdir(parent.c_str(), 0700));
     EXPECT_TRUE(publish(candidate));
@@ -194,20 +188,19 @@ TEST_F(AttachmentConfigPublisherTest, BufferedWriteFailureDoesNotCommitOrNotify)
     EXPECT_EQ(1, reconfs);
 }
 
-TEST_F(AttachmentConfigPublisherTest, LargeWriteFailureDoesNotCommitOrNotify)
+TEST_F(AttachmentConfigPublisherTest, LargeWriteFailureDoesNotNotify)
 {
     ofstream full_device("/dev/full");
     ASSERT_TRUE(full_device.is_open());
     full_device.close();
     ASSERT_FALSE(full_device.fail());
-    const TestConfig previous = committed;
     const TestConfig candidate = {string(1024 * 1024, 'x'), 64};
     EXPECT_FALSE(publisher.publish(candidate, committed, ipc_elements,
         [&]() { return writeAttachmentSettings("/dev/full", candidate.content); },
         [&]() { ++reconfs; }
     ));
-    EXPECT_TRUE(committed == previous);
-    EXPECT_EQ(8u, ipc_elements);
+    EXPECT_TRUE(committed == candidate);
+    EXPECT_EQ(64u, ipc_elements);
     EXPECT_EQ(0, reconfs);
 }
 

@@ -895,11 +895,18 @@ private:
                     << primary_attachment_ipc;
             }
         );
-        if (!published) {
+        if (!published && !config_retry_pending) {
+            // One retry chain at a time, with a pause, so a permanent failure cannot spin the main loop.
+            config_retry_pending = true;
             mainloop->addOneTimeRoutine(
                 I_MainLoop::RoutineType::Offline,
 // LCOV_EXCL_START Reason: coverage upgrade
-                [this] () { generateAttachmentConfig(); },
+                [this] ()
+                {
+                    mainloop->yield(std::chrono::seconds(5));
+                    config_retry_pending = false;
+                    generateAttachmentConfig();
+                },
 // LCOV_EXCL_STOP
                 "Nginx Attachment configuration generator",
                 false
@@ -2323,6 +2330,7 @@ private:
     SharedMemoryIPC *secondary_attachment_sync_ipc = nullptr;
     HttpAttachmentConfig attachment_config;
     AttachmentConfigPublisher attachment_config_publisher;
+    bool config_retry_pending = false;
     I_MainLoop::RoutineID attachment_routine_id = 0;
     I_MainLoop::RoutineID secondary_attachment_routine_id = 0;
     bool traffic_indicator = false;

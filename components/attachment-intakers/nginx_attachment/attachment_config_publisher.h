@@ -33,11 +33,14 @@ public:
     )
     {
         if (!published || !(committed == candidate)) {
-            // The writer may remove/truncate the previous file even when it fails.
+            // The in-memory config follows the candidate at once (async mode and IPC sizing are used at startup),
+            // while "published" tracks whether the settings file matches it. The writer may remove or truncate
+            // the previous file even when it fails, so a failure leaves the file unpublished and the next call
+            // writes again even for identical content.
             published = false;
-            if (!write()) return false;
             committed = candidate;
             ipc_elements = candidate.getNumOfNginxElements();
+            if (!write()) return false;
             published = true;
         }
         notify();
