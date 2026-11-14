@@ -122,6 +122,9 @@ public:
     isMatch() const
     {
         SentinelRuntimeState curr_state;
+        // The boundary is fixed for the whole rule run, so look it up once here.
+        auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
+        curr_state.setMayHaveNewDataBoundary(env->get<uint>(I_KeywordsRule::getNewDataOffsetTag()).ok());
         return runNext(&curr_state);
     }
 

@@ -8,6 +8,11 @@ class SentinelRuntimeState : public I_KeywordRuntimeState
 public:
     uint getOffset(const std::string &) const override;
     uint getVariable(uint) const override;
+    bool mayHaveNewDataBoundary() const override { return may_have_boundary; }
+    void setMayHaveNewDataBoundary(bool val) { may_have_boundary = val; }
+
+private:
+    bool may_have_boundary = true;
 };
 
 #endif //  ___SENTINEL_RUNTIME_STATE_H__

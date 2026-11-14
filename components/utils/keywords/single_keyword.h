@@ -80,6 +80,8 @@ public:
     virtual uint getOffset(const std::string &ctx) const = 0;
     virtual uint getMatchEnd(const std::string &) const { return 0; }
     virtual uint getVariable(uint requested_var_id) const = 0;
+    // False only when the rule start saw no new-data boundary; true means "look it up".
+    virtual bool mayHaveNewDataBoundary() const { return true; }
 protected:
     virtual ~I_KeywordRuntimeState()
     {
@@ -96,6 +98,7 @@ public:
     uint getOffset(const std::string &requested_ctx_id) const override;
     uint getVariable(uint requested_var_id) const override;
     uint getMatchEnd(const std::string &requested_ctx) const override;
+    bool mayHaveNewDataBoundary() const override { return prev->mayHaveNewDataBoundary(); }
 
 private:
     const I_KeywordRuntimeState *prev;
@@ -115,6 +118,7 @@ public:
     uint getOffset(const std::string &requested_ctx_id) const override;
     uint getVariable(uint requested_var_id) const override;
     uint getMatchEnd(const std::string &requested_ctx) const override;
+    bool mayHaveNewDataBoundary() const override { return prev->mayHaveNewDataBoundary(); }
 
 private:
     const I_KeywordRuntimeState *prev;

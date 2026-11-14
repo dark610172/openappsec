@@ -23,9 +23,10 @@ SingleKeyword::canSuppressReplay(const string &context) const
 MatchStatus
 SingleKeyword::runNext(const I_KeywordRuntimeState *curr) const
 {
+    // Only contexts with a new-data boundary (HTTP_RAW) use replay suppression; skip all lookups otherwise.
+    if (!curr->mayHaveNewDataBoundary()) return next == nullptr ? MatchStatus::Match : next->isMatch(curr);
     auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
     auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
-    // Only contexts with a new-data boundary (HTTP_RAW) use replay suppression; skip the other lookups.
     if (!boundary.ok()) return next == nullptr ? MatchStatus::Match : next->isMatch(curr);
     auto suppression = env->get<bool>(I_KeywordsRule::getReplaySuppressionTag());
     bool suppress_replay = !suppression.ok() || *suppression;

@@ -382,10 +382,16 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
     // A terminal positive literal can skip candidates ending wholly in old overlap.
     // Earlier literals remain searchable for relative chains that finish in new data.
     // Look up the rule context and suppression flag only when a new-data boundary exists (HTTP_RAW).
-    auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    uint boundary_val = 0;
+    bool boundary_ok = false;
+    if (prev->mayHaveNewDataBoundary()) {
+        auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+        boundary_ok = boundary.ok();
+        if (boundary_ok) boundary_val = *boundary;
+    }
     bool has_boundary = false;
     bool suppress_replay = true;
-    if (boundary.ok()) {
+    if (boundary_ok) {
         auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
         has_boundary = context.ok() && *context == static_cast<string>(ctx);
         if (has_boundary) {
@@ -394,8 +400,8 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
         }
     }
     bool skips_overlap = isLast() && !is_negative && has_boundary && suppress_replay
-        && prev->getMatchEnd(ctx) <= *boundary;
-    if (skips_overlap) offset = max(offset, *boundary + 1);
+        && prev->getMatchEnd(ctx) <= boundary_val;
+    if (skips_overlap) offset = max(offset, boundary_val + 1);
 
     bool match_found = false;
     while (offset<=max_offset) {
