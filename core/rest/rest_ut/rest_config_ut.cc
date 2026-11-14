@@ -15,6 +15,9 @@
 #include "mock/mock_messaging.h"
 #include "tenant_manager.h"
 #include <netdb.h>
+#include <ifaddrs.h>
+#include <cstring>
+#include <net/if.h>
 #include <arpa/inet.h>
 
 using namespace std;
@@ -115,6 +118,7 @@ TEST_F(RestConfigTest, alternative_port_used)
     EXPECT_EQ(setsockopt(file_descriptor, SOL_SOCKET, SO_REUSEADDR, &socket_enable, sizeof(int)), 0);
     EXPECT_EQ(bind(file_descriptor, reinterpret_cast<struct sockaddr *>(&sa), sizeof(struct sockaddr_in)), 0);
     EXPECT_EQ(listen(file_descriptor, 1), 0);
+    int primary_listener = file_descriptor;
 
     auto alternative_port = getConfiguration<uint>("connection", "Nano service API Port Alternative");
     EXPECT_TRUE(alternative_port.ok());
@@ -143,6 +147,7 @@ TEST_F(RestConfigTest, alternative_port_used)
 
     rest_server.fini();
     close(file_descriptor);
+    close(primary_listener);
 }
 
 class TestServer : public ServerRest
@@ -197,6 +202,8 @@ TEST_F(RestConfigTest, basic_flow)
 
     auto mainloop = Singleton::Consume<I_MainLoop>::from(mainloop_comp);
     I_MainLoop::Routine stop_routine = [&] () {
+        // The server uses the alternative port only when the primary one is taken; connect to the real one.
+        sa.sin_port = htons(Singleton::Consume<I_RestApi>::from(rest_server)->getListeningPort());
         EXPECT_EQ(connect(file_descriptor1, (struct sockaddr*)&sa, sizeof(struct sockaddr)), 0)
             << "file_descriptor1 Error: "
             << strerror(errno);
@@ -260,6 +267,27 @@ TEST_F(RestConfigTest, basic_flow)
 }
 
 string
+getInterfaceAddress()
+{
+    struct ifaddrs *interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) return "";
+
+    string result;
+    for (struct ifaddrs *entry = interfaces; entry != nullptr; entry = entry->ifa_next) {
+        if (entry->ifa_addr == nullptr || entry->ifa_addr->sa_family != AF_INET) continue;
+        if ((entry->ifa_flags & IFF_LOOPBACK) != 0 || (entry->ifa_flags & IFF_UP) == 0) continue;
+
+        char ipstr[INET_ADDRSTRLEN];
+        auto ipv4 = reinterpret_cast<struct sockaddr_in *>(entry->ifa_addr);
+        if (inet_ntop(AF_INET, &ipv4->sin_addr, ipstr, sizeof(ipstr)) == nullptr) continue;
+        result = ipstr;
+        break;
+    }
+    freeifaddrs(interfaces);
+    return result;
+}
+
+string
 getLocalIPAddress() {
     char hostname[1024];
     hostname[1024 - 1] = '\0';
@@ -278,7 +306,7 @@ getLocalIPAddress() {
 
     // Get the address info
     if ((gai_result = getaddrinfo(hostname, nullptr, &hints, &info)) != 0) {
-        return "";
+        return getInterfaceAddress();
     }
 
     std::string ip_address;
@@ -291,7 +319,8 @@ getLocalIPAddress() {
 
         // Convert the IP to a string and print it
         inet_ntop(p->ai_family, addr, ipstr, sizeof(ipstr));
-        if (std::string(ipstr) != "127.0.0.1") {
+        // Debian and Ubuntu resolve the hostname to 127.0.1.1, which is still loopback.
+        if (strncmp(ipstr, "127.", 4) != 0) {
             ip_address = ipstr;
             break;
         }
@@ -299,12 +328,15 @@ getLocalIPAddress() {
 
     freeaddrinfo(info); // Free the linked list
 
+    if (ip_address.empty()) return getInterfaceAddress();
     return ip_address;
 }
 
 
 TEST_F(RestConfigTest, not_loopback_flow)
 {
+    if (getLocalIPAddress().empty()) GTEST_SKIP() << "no non-loopback IPv4 address on this host";
+
     env.preload();
     Singleton::Consume<I_Environment>::from(env)->registerValue<string>("Executable Name", "tmp_test_file");
 
@@ -523,6 +555,8 @@ TEST_F(RestConfigTest, post_call_integration_test)
 
     auto mainloop = Singleton::Consume<I_MainLoop>::from(mainloop_comp);
     I_MainLoop::Routine stop_routine = [&] () {
+        // The server uses the alternative port only when the primary one is taken; connect to the real one.
+        sa.sin_port = htons(Singleton::Consume<I_RestApi>::from(rest_server)->getListeningPort());
         EXPECT_EQ(connect(file_descriptor, (struct sockaddr*)&sa, sizeof(struct sockaddr)), 0)
             << "file_descriptor Error: " << strerror(errno);
 
@@ -596,6 +630,8 @@ TEST_F(RestConfigTest, post_call_generic_error_test)
 
     auto mainloop = Singleton::Consume<I_MainLoop>::from(mainloop_comp);
     I_MainLoop::Routine stop_routine = [&] () {
+        // The server uses the alternative port only when the primary one is taken; connect to the real one.
+        sa.sin_port = htons(Singleton::Consume<I_RestApi>::from(rest_server)->getListeningPort());
         EXPECT_EQ(connect(file_descriptor, (struct sockaddr*)&sa, sizeof(struct sockaddr)), 0)
             << "file_descriptor Error: " << strerror(errno);
 
