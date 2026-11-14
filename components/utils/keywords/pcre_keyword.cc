@@ -17,6 +17,15 @@ class PCREKeyword : public SingleKeyword
 public:
     explicit PCREKeyword(const vector<KeywordAttr> &attr, const VariablesMapping &known_vars);
     MatchStatus isMatch(const I_KeywordRuntimeState *prev) const override;
+    bool
+    hasTrackedDependencies(const string &context) const override
+    {
+        // Only plain ASCII literals have no assertions or other untracked dependencies.
+        // In particular, lookahead and zero-width expressions must allow overlap matches.
+        return !is_negative && !pcre_expr.empty() && static_cast<string>(ctx) == context
+            && pcre_expr.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+                == string::npos;
+    }
 
 private:
     void

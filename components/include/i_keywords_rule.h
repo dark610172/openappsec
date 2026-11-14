@@ -26,6 +26,13 @@ public:
         static const std::string tag = "keywords_rule_new_data_offset";
         return tag;
     }
+    // False permits overlap matches when some input dependencies are not tracked.
+    static const std::string &
+    getReplaySuppressionTag()
+    {
+        static const std::string tag = "keywords_rule_replay_suppression";
+        return tag;
+    }
 
 protected:
     virtual ~I_KeywordsRule() {}

@@ -15,6 +15,13 @@ class LengthKeyword : public SingleKeyword
 public:
     explicit LengthKeyword(const vector<KeywordAttr> &attr, VariablesMapping &vars);
     MatchStatus isMatch(const I_KeywordRuntimeState* prev) const override;
+    bool
+    hasTrackedDependencies(const string &context) const override
+    {
+        // The constant non-relative minimum of zero cannot become true due to appended bytes.
+        return !is_relative && mode.isSet(Mode::MIN) && compare_size.isConstant()
+            && compare_size.evalAttr(nullptr) == 0 && static_cast<string>(ctx) == context;
+    }
 
 private:
     enum class Mode { EXACT, MIN, MAX, COUNT };

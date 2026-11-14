@@ -268,12 +268,13 @@ public:
     }
 
     void
-    checkRawDetectHistory(const string &keywords, const string &ssm = "")
+    checkRawDetectHistory(const string &keywords, const string &ssm = "", bool fresh_ssm_prefix = false)
     {
         loadRules({{"HTTP_RAW", keywords}}, "Detect", ssm);
         setTrigger();
         RawMatchCapture capture;
-        EXPECT_CALL(logs, sendLog(_)).Times(3);
+        const uint extra_ssm_match = fresh_ssm_prefix ? 1 : 0;
+        EXPECT_CALL(logs, sendLog(_)).Times(3 + extra_ssm_match);
         startRequest();
         EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
         HttpBody first(Buffer("D2"), false, 0);
@@ -290,23 +291,61 @@ public:
         // The old occurrence is still retained when a second occurrence crosses a chunk boundary.
         HttpBody next_prefix(Buffer("D2"), false, 302);
         EXPECT_THAT(HttpRequestBodyEvent(next_prefix, Buffer()).query(), ElementsAre(inspect));
-        EXPECT_EQ(capture.actions.size(), 1u);
+        // A fresh SSM can conservatively complete the conjunction with the old keyword chain.
+        EXPECT_EQ(capture.actions.size(), 1u + extra_ssm_match);
         HttpBody next_suffix(Buffer("MARKER"), false, 303);
         EXPECT_THAT(HttpRequestBodyEvent(next_suffix, Buffer()).query(), ElementsAre(inspect));
-        EXPECT_EQ(capture.actions.size(), 2u);
+        EXPECT_EQ(capture.actions.size(), 2u + extra_ssm_match);
         HttpBody empty(Buffer(""), false, 304);
         EXPECT_THAT(HttpRequestBodyEvent(empty, Buffer()).query(), ElementsAre(inspect));
-        EXPECT_EQ(capture.actions.size(), 2u);
+        EXPECT_EQ(capture.actions.size(), 2u + extra_ssm_match);
         HttpBody roll_window(Buffer(string(1200, 'x')), false, 305);
         EXPECT_THAT(HttpRequestBodyEvent(roll_window, Buffer()).query(), ElementsAre(inspect));
-        EXPECT_EQ(capture.actions.size(), 2u);
+        EXPECT_EQ(capture.actions.size(), 2u + extra_ssm_match);
         HttpBody fresh(Buffer("D2MARKER"), true, 306);
         EXPECT_THAT(HttpRequestBodyEvent(fresh, Buffer()).query(), ElementsAre(inspect));
-        EXPECT_THAT(capture.actions, ElementsAre(
-            IPSSignatureSubTypes::SignatureAction::DETECT,
-            IPSSignatureSubTypes::SignatureAction::DETECT,
-            IPSSignatureSubTypes::SignatureAction::DETECT
-        ));
+        vector<IPSSignatureSubTypes::SignatureAction> expected_actions(
+            3u + extra_ssm_match, IPSSignatureSubTypes::SignatureAction::DETECT
+        );
+        EXPECT_THAT(capture.actions, ElementsAreArray(expected_actions));
+        EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+    }
+
+    void
+    checkRawSplitPredicate(const string &keywords)
+    {
+        loadRules({{"HTTP_RAW", keywords}});
+        startRequest();
+        EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+        EXPECT_FALSE(entry.isDrop());
+        HttpBody first(Buffer("D2"), false, 0);
+        EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+        EXPECT_FALSE(entry.isDrop());
+        HttpBody last(Buffer("MARKER"), true, 1);
+        EXPECT_THAT(HttpRequestBodyEvent(last, Buffer()).query(), ElementsAre(inspect));
+        EXPECT_TRUE(entry.isDrop());
+        EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+    }
+
+    void
+    checkRawZeroWidthReplay(const string &keywords)
+    {
+        loadRules({{"HTTP_RAW", keywords}}, "Detect");
+        setTrigger();
+        RawMatchCapture capture;
+        EXPECT_CALL(logs, sendLog(_)).Times(::testing::AtLeast(4));
+        startRequest();
+        EXPECT_TRUE(capture.actions.empty());
+        EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+        EXPECT_FALSE(capture.actions.empty());
+        const size_t baseline = capture.actions.size();
+        // Zero-width assertions have untracked input dependencies; allow replay rather than miss detection.
+        for (uint i = 0; i < 3; ++i) {
+            HttpBody clean(Buffer("x"), i == 2, i);
+            EXPECT_THAT(HttpRequestBodyEvent(clean, Buffer()).query(), ElementsAre(inspect));
+            EXPECT_EQ(capture.actions.size(), baseline + i + 1u);
+        }
+        EXPECT_THAT(capture.actions, Each(IPSSignatureSubTypes::SignatureAction::DETECT));
         EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
     }
 
@@ -517,7 +556,76 @@ TEST_P(IPSRuntimeTest, raw_pcre_detect_finds_new_match_after_old_overlap_match)
 
 TEST_P(IPSRuntimeTest, raw_ssm_prefilter_preserves_relative_match_into_new_data)
 {
-    checkRawDetectHistory("data: \"D2\"; data: \"MARKER\", relative, depth 6;", "D2");
+    checkRawDetectHistory("data: \"D2\"; data: \"MARKER\", relative, depth 6;", "D2", true);
+}
+
+TEST_P(IPSRuntimeTest, raw_relative_length_first_matches_when_new_bytes_arrive)
+{
+    checkRawSplitPredicate("data: \"D2\"; length: 6, relative, min;");
+}
+
+TEST_P(IPSRuntimeTest, raw_relative_length_allows_old_terminal_literal)
+{
+    checkRawSplitPredicate("data: \"D2\"; length: 6, relative, min; data: \"POST\", caret;");
+}
+
+TEST_P(IPSRuntimeTest, raw_pcre_lookahead_first_matches_when_new_bytes_arrive)
+{
+    checkRawSplitPredicate("pcre: \"/D2(?=MARKER)/\";");
+}
+
+TEST_P(IPSRuntimeTest, raw_pcre_lookahead_allows_old_terminal_literal)
+{
+    checkRawSplitPredicate("pcre: \"/D2(?=MARKER)/\"; data: \"POST\", caret;");
+}
+
+TEST_P(IPSRuntimeTest, raw_fresh_ssm_completes_old_caret_keyword)
+{
+    loadRules({{"HTTP_RAW", "data: \"POST\", caret;"}}, "Prevent", "ATTACK");
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_FALSE(entry.isDrop());
+    HttpBody body(Buffer("ATTACK"), true, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(body, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_TRUE(entry.isDrop());
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(drop));
+}
+
+TEST_P(IPSRuntimeTest, raw_fresh_split_ssm_completes_old_keyword_without_clean_chunk_replay)
+{
+    loadRules({{"HTTP_RAW", "data: \"POST\", caret;"}}, "Detect", "ATTACK");
+    setTrigger();
+    RawMatchCapture capture;
+    EXPECT_CALL(logs, sendLog(_)).Times(2);
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_TRUE(capture.actions.empty());
+    for (uint i = 0; i < 2; ++i) {
+        HttpBody prefix(Buffer("AT"), false, i * 3);
+        EXPECT_THAT(HttpRequestBodyEvent(prefix, Buffer()).query(), ElementsAre(inspect));
+        EXPECT_EQ(capture.actions.size(), i);
+        HttpBody suffix(Buffer("TACK"), false, i * 3 + 1);
+        EXPECT_THAT(HttpRequestBodyEvent(suffix, Buffer()).query(), ElementsAre(inspect));
+        EXPECT_EQ(capture.actions.size(), i + 1u);
+        HttpBody clean(Buffer("x"), i == 1, i * 3 + 2);
+        EXPECT_THAT(HttpRequestBodyEvent(clean, Buffer()).query(), ElementsAre(inspect));
+        EXPECT_EQ(capture.actions.size(), i + 1u);
+    }
+    EXPECT_THAT(capture.actions, ElementsAre(
+        IPSSignatureSubTypes::SignatureAction::DETECT,
+        IPSSignatureSubTypes::SignatureAction::DETECT
+    ));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+}
+
+TEST_P(IPSRuntimeTest, raw_zero_width_pcre_conservatively_allows_replay)
+{
+    checkRawZeroWidthReplay("pcre: \"/(?=POST)/\";");
+}
+
+TEST_P(IPSRuntimeTest, raw_zero_width_pcre_disables_suppression_after_old_literal)
+{
+    checkRawZeroWidthReplay("data: \"POST\", caret; pcre: \"/(?=POST)/\";");
 }
 
 TEST_P(IPSRuntimeTest, raw_detect_preserves_new_match_before_later_absolute_old_match)
@@ -558,6 +666,30 @@ TEST_P(IPSRuntimeTest, raw_detect_finds_self_overlapping_occurrence_into_new_dat
     EXPECT_CALL(logs, sendLog(_)).Times(2);
     startRequest();
     EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    HttpBody first(Buffer("ABAB"), false, 0);
+    EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 1u);
+    HttpBody overlapping(Buffer("AB"), false, 1);
+    EXPECT_THAT(HttpRequestBodyEvent(overlapping, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_EQ(capture.actions.size(), 2u);
+    HttpBody clean(Buffer("x"), true, 2);
+    EXPECT_THAT(HttpRequestBodyEvent(clean, Buffer()).query(), ElementsAre(inspect));
+    EXPECT_THAT(capture.actions, ElementsAre(
+        IPSSignatureSubTypes::SignatureAction::DETECT,
+        IPSSignatureSubTypes::SignatureAction::DETECT
+    ));
+    EXPECT_THAT(EndRequestEvent().query(), ElementsAre(accept));
+}
+
+TEST_P(IPSRuntimeTest, raw_untracked_length_preserves_self_overlapping_occurrences)
+{
+    loadRules({{"HTTP_RAW", "data: \"ABAB\"; length: 0, relative, exact;"}}, "Detect");
+    setTrigger();
+    RawMatchCapture capture;
+    EXPECT_CALL(logs, sendLog(_)).Times(2);
+    startRequest();
+    EXPECT_THAT(HttpRequestHeaderEvent(end_headers).query(), ElementsAre(inspect));
+    EXPECT_TRUE(capture.actions.empty());
     HttpBody first(Buffer("ABAB"), false, 0);
     EXPECT_THAT(HttpRequestBodyEvent(first, Buffer()).query(), ElementsAre(inspect));
     EXPECT_EQ(capture.actions.size(), 1u);

@@ -14,13 +14,21 @@ SingleKeyword::appendKeyword(unique_ptr<SingleKeyword> &&_next)
     }
 }
 
+bool
+SingleKeyword::canSuppressReplay(const string &context) const
+{
+    return hasTrackedDependencies(context) && (next == nullptr || next->canSuppressReplay(context));
+}
+
 MatchStatus
 SingleKeyword::runNext(const I_KeywordRuntimeState *curr) const
 {
+    auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
+    auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    auto suppression = env->get<bool>(I_KeywordsRule::getReplaySuppressionTag());
+    bool suppress_replay = !suppression.ok() || *suppression;
     if (next==nullptr) {
-        auto env = Singleton::Consume<I_Environment>::by<KeywordComp>();
-        auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
-        if (boundary.ok()) {
+        if (suppress_replay && boundary.ok()) {
             auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
             if (context.ok()) {
                 auto end = curr->getMatchEnd(*context);
@@ -28,6 +36,13 @@ SingleKeyword::runNext(const I_KeywordRuntimeState *curr) const
             }
         }
         return MatchStatus::Match;
+    }
+    auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
+    if (!suppression.ok() && boundary.ok() && context.ok()) {
+        // Decide once for the whole rule, including terminal rejection and literal skipping.
+        ScopedContext scope;
+        scope.registerValue(I_KeywordsRule::getReplaySuppressionTag(), next->canSuppressReplay(*context));
+        return next->isMatch(curr);
     }
     return next->isMatch(curr);
 }

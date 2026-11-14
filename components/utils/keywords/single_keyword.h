@@ -249,9 +249,12 @@ public:
     }
 
     bool isLast() const { return next == nullptr; }
+    bool canSuppressReplay(const std::string &context) const;
     MatchStatus runNext(const I_KeywordRuntimeState *curr) const;
     void appendKeyword(std::unique_ptr<SingleKeyword> &&_next);
     virtual MatchStatus isMatch(const I_KeywordRuntimeState *prev) const = 0;
+    // Keywords must opt in only when match ends cover all input dependencies.
+    virtual bool hasTrackedDependencies(const std::string &) const { return false; }
 
 private:
     std::unique_ptr<SingleKeyword> next;

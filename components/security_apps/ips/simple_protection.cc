@@ -35,10 +35,10 @@ SimpleProtection::Impl::Impl(
         pattern = temp_pattern.unpackMove();
     }
 
-    if (!rule && !pattern.empty()) {
+    if (!pattern.empty()) {
         for (const auto &name : context) {
             if (name != "HTTP_RAW") continue;
-            // SSM-only rules also need occurrence offsets, not just pattern membership.
+            // Track SSM occurrences even when a keyword rule completes the conjunction.
             raw_pattern_matcher = make_shared<PMHook>();
             auto prepared = raw_pattern_matcher->prepare({pattern});
             if (!prepared.ok()) reportConfigurationError("Failed RAW pattern: " + prepared.getErr());
@@ -60,22 +60,30 @@ SimpleProtection::Impl::getMatch(const set<PMPattern> &matches) const
     if (!pattern.empty() && matches.find(pattern) == matches.end()) return MatchType::NO_MATCH;
 
     dbgTrace(D_IPS) << "Checking for rule";
-    if (!rule) {
-        auto env = Singleton::Consume<I_Environment>::by<IPSComp>();
-        auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
-        if (raw_pattern_matcher && boundary.ok()) {
-            auto buffer = env->get<Buffer>("HTTP_RAW");
-            if (!buffer.ok()) return MatchType::NO_MATCH;
-            for (const auto &match : raw_pattern_matcher->scanBufWithOffset(*buffer)) {
-                // PM offsets identify the last matched byte (inclusive).
-                if (match.second >= *boundary) return MatchType::MATCH;
+    auto env = Singleton::Consume<I_Environment>::by<IPSComp>();
+    auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    bool fresh_ssm = false;
+    if (raw_pattern_matcher && boundary.ok()) {
+        auto buffer = env->get<Buffer>("HTTP_RAW");
+        if (!buffer.ok()) return MatchType::NO_MATCH;
+        for (const auto &match : raw_pattern_matcher->scanBufWithOffset(*buffer)) {
+            // PM offsets identify the last matched byte (inclusive).
+            if (match.second >= *boundary) {
+                fresh_ssm = true;
+                break;
             }
-            return MatchType::NO_MATCH;
         }
-        return MatchType::MATCH;
+        if (!rule) return fresh_ssm ? MatchType::MATCH : MatchType::NO_MATCH;
     }
+    if (!rule) return MatchType::MATCH;
 
     dbgTrace(D_IPS) << "Running keywords";
+    if (fresh_ssm) {
+        // A new SSM occurrence can complete a rule whose keywords only match old history.
+        ScopedContext scope;
+        scope.registerValue(I_KeywordsRule::getReplaySuppressionTag(), false);
+        return rule->isMatch() ? MatchType::MATCH : MatchType::NO_MATCH;
+    }
     return rule->isMatch() ? MatchType::MATCH : MatchType::NO_MATCH;
 }
 

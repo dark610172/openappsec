@@ -14,6 +14,11 @@ class DataKeyword : public SingleKeyword
 public:
     explicit DataKeyword(const vector<KeywordAttr> &attr, const VariablesMapping &vars);
     MatchStatus isMatch(const I_KeywordRuntimeState* prev) const override;
+    bool
+    hasTrackedDependencies(const string &context) const override
+    {
+        return !is_negative && static_cast<string>(ctx) == context;
+    }
 
 private:
     void
@@ -378,8 +383,10 @@ DataKeyword::isMatch(const I_KeywordRuntimeState *prev) const
     // Earlier literals remain searchable for relative chains that finish in new data.
     auto context = env->get<string>(I_KeywordsRule::getKeywordsRuleTag());
     auto boundary = env->get<uint>(I_KeywordsRule::getNewDataOffsetTag());
+    auto suppression = env->get<bool>(I_KeywordsRule::getReplaySuppressionTag());
     bool has_boundary = context.ok() && *context == static_cast<string>(ctx) && boundary.ok();
-    bool skips_overlap = isLast() && !is_negative && has_boundary && prev->getMatchEnd(ctx) <= *boundary;
+    bool skips_overlap = isLast() && !is_negative && has_boundary && (!suppression.ok() || *suppression)
+        && prev->getMatchEnd(ctx) <= *boundary;
     if (skips_overlap) offset = max(offset, *boundary + 1);
 
     bool match_found = false;
