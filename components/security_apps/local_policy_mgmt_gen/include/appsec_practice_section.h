@@ -62,10 +62,10 @@ class AppSecWebAttackProtections
 public:
     void load(cereal::JSONInputArchive &archive_in);
 
-    const std::string getCsrfProtectionMode() const;
-    const std::string & getErrorDisclosureMode() const;
+    const std::string & getCsrfProtectionMode(const std::string &default_mode = "inactive") const;
+    const std::string & getErrorDisclosureMode(const std::string &default_mode = "inactive") const;
     bool getNonValidHttpMethods() const;
-    const std::string getOpenRedirectMode() const;
+    const std::string & getOpenRedirectMode(const std::string &default_mode = "inactive") const;
 
 private:
     std::string csrf_protection;

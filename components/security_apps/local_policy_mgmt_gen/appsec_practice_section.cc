@@ -97,23 +97,16 @@ AppSecWebAttackProtections::load(cereal::JSONInputArchive &archive_in)
     parseAppsecJSONKey<bool>("non-valid-http-methods", non_valid_http_methods, archive_in, false);
 }
 
-const string
-AppSecWebAttackProtections::getCsrfProtectionMode() const
+const string &
+AppSecWebAttackProtections::getCsrfProtectionMode(const string &default_mode) const
 {
-    if (key_to_practices_val.find(csrf_protection) == key_to_practices_val.end()) {
-        dbgError(D_LOCAL_POLICY)
-            << "Failed to find a value for "
-            << csrf_protection
-            << ". Setting CSRF protection to Inactive";
-        return "Inactive";
-    }
-    return key_to_practices_val.at(csrf_protection);
+    return getModeWithDefault(csrf_protection, default_mode, key_to_practices_val2);
 }
 
 const string &
-AppSecWebAttackProtections::getErrorDisclosureMode() const
+AppSecWebAttackProtections::getErrorDisclosureMode(const string &default_mode) const
 {
-    return error_disclosure;
+    return getModeWithDefault(error_disclosure, default_mode, key_to_practices_val2);
 }
 
 bool
@@ -122,17 +115,10 @@ AppSecWebAttackProtections::getNonValidHttpMethods() const
     return non_valid_http_methods;
 }
 
-const string
-AppSecWebAttackProtections::getOpenRedirectMode() const
+const string &
+AppSecWebAttackProtections::getOpenRedirectMode(const string &default_mode) const
 {
-    if (key_to_practices_val.find(open_redirect) == key_to_practices_val.end()) {
-        dbgError(D_LOCAL_POLICY)
-            << "Failed to find a value for "
-            << open_redirect
-            << ". Setting Open Redirect mode to Inactive";
-        return "Inactive";
-    }
-    return key_to_practices_val.at(open_redirect);
+    return getModeWithDefault(open_redirect, default_mode, key_to_practices_val2);
 }
 
 void
@@ -441,9 +427,6 @@ WebAppSection::WebAppSection(
     practice_name(_practice_name),
     context(_context),
     web_attack_mitigation_mode(parsed_appsec_spec.getWebAttacks().getMode(default_mode)),
-    csrf_protection_mode("Disabled"),
-    open_redirect_mode("Disabled"),
-    error_disclosure_mode("Disabled"),
     schema_validation_mode("Disabled"),
     schema_validation_enforce_level("fullSchema"),
     practice_advanced_config(parsed_appsec_spec),
@@ -469,6 +452,11 @@ WebAppSection::WebAppSection(
         web_attack_mitigation_severity == "High" ? "Balanced" :
         web_attack_mitigation_severity == "Medium" ? "High" :
         "Error";
+
+    const auto &protections = parsed_appsec_spec.getWebAttacks().getprotections();
+    csrf_protection_mode = protections.getCsrfProtectionMode(web_attack_mitigation_mode);
+    open_redirect_mode = protections.getOpenRedirectMode(web_attack_mitigation_mode);
+    error_disclosure_mode = protections.getErrorDisclosureMode(web_attack_mitigation_mode);
 
     triggers.push_back(TriggersInWaapSection(parsed_log_trigger));
     for (const SourcesIdentifiers &source_ident : parsed_trusted_sources.getSourcesIdentifiers()) {
